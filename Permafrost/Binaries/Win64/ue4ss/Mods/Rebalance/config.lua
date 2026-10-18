@@ -168,8 +168,13 @@ return {
         aimMultiplier                = 0.35  , -- vanilla -     extra spread while aiming down sights (0.35 = 35%)
         crouchMultiplier             = 0.7   , -- vanilla -     extra spread while crouched
         sprintSpeed                  = 600   , -- vanilla -     speed in cm/s that counts as a full sprint
+        useAccuracySkill             = 1     , -- vanilla -     1 = your Accuracy skill shrinks the extra spread by the same per-level benefit the game uses
+        minSkillMultiplier           = 0.3   , -- vanilla -     a maxed skill never shrinks the extra spread below this share
         reticle                      = 1     , -- vanilla 0     1 = the crosshair lines open up and close with the spread
         reticlePixelsPerDeg          = 10    , -- vanilla -     how far the crosshair lines move apart per degree of extra spread (pixels)
+        reticleGap                   = 6     , -- vanilla -     gap between the crosshair lines when steady (pixels)
+        reticleLength                = 10    , -- vanilla -     length of each crosshair line (pixels)
+        reticleThickness             = 2     , -- vanilla -     thickness of each crosshair line (pixels)
         debugLog                     = 1     , -- vanilla -     1 = log the first shots
     },
 

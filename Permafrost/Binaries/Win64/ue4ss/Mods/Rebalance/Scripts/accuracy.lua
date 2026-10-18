@@ -28,8 +28,13 @@ local DEFAULTS = {
     { "aimMultiplier",     0.35, "extra spread while aiming down sights (0.35 = 35%)" },
     { "crouchMultiplier",  0.7,  "extra spread while crouched" },
     { "sprintSpeed",       600,  "speed (cm/s) that counts as a full sprint" },
+    { "useAccuracySkill",  1,    "1 = your Accuracy skill shrinks the extra spread by its per-level benefit" },
+    { "minSkillMultiplier", 0.3, "a maxed skill never shrinks the extra spread below this share" },
     { "reticle",           1,    "1 = the crosshair grows and shrinks with the spread" },
     { "reticlePixelsPerDeg", 10, "how far the crosshair lines move apart per degree of extra spread (pixels)" },
+    { "reticleGap",        6,    "gap between the crosshair lines when steady (pixels)" },
+    { "reticleLength",     10,   "length of each crosshair line (pixels)" },
+    { "reticleThickness",  2,    "thickness of each crosshair line (pixels)" },
     { "debugLog",          1,    "1 = log the first shots" },
 }
 local function load_config()
@@ -78,7 +83,49 @@ end
 -- ALS enums: RotationMode 2 = Aiming, Stance 1 = Crouching, MovementState 2 = InAir.
 local ROT_AIMING, STANCE_CROUCH, STATE_AIR = 2, 1, 2
 
+------------------------------------------------------------------ skill
+-- The game's Accuracy skill (DA_Skill_Accuracy): UniformValuePerLevel is
+-- its benefit per level; the player's level is in the pawn's
+-- CharacterSkillsComponent.SkillsRuntimeData (user 2026-10-18: the extra
+-- spread should follow the skill). Read every 5 s.
+local skill_mult, skill_logged = 1, false
+local skills_class = nil
+local function read_skill(pawn)
+    if CFG.useAccuracySkill ~= 1 then skill_mult = 1 return end
+    skills_class = skills_class or try(function() return StaticFindObject("/Script/Permafrost.CharacterSkillsComponent") end)
+    local comp = valid(skills_class) and call(pawn, "GetComponentByClass", skills_class)
+    local data = valid(comp) and get(comp, "SkillsRuntimeData")
+    if not data then return end
+    local level, per = nil, nil
+    try(function()
+        data:ForEach(function(_, e)
+            local d = e:get()
+            local name = try(function() return d.SkillName:ToString() end) or ""
+            local skill = try(function() return d.AssociatedSkill end)
+            local sname = valid(skill) and fname(skill) or ""
+            if name:find("Accuracy") or sname:find("Accuracy") then
+                level = tonumber(try(function() return d.Level end))
+                if valid(skill) then per = tonumber(get(skill, "UniformValuePerLevel")) end
+            end
+        end)
+    end)
+    if not per then
+        for _, s in ipairs(try(function() return FindAllOf("Skill_BaseClass") end) or {}) do
+            if valid(s) and fname(s) == "DA_Skill_Accuracy" then per = tonumber(get(s, "UniformValuePerLevel")) end
+        end
+    end
+    if not level or not per then return end
+    -- Benefit per level as a share (the asset may store 2 for 2 %).
+    local share = per > 1 and per / 100 or per
+    skill_mult = math.max(CFG.minSkillMultiplier, 1 - level * share)
+    if CFG.debugLog == 1 and not skill_logged then
+        skill_logged = true
+        log(string.format("Accuracy skill level %d, %.3f per level -> extra spread x%.2f", level, per, skill_mult))
+    end
+end
+
 local gun_path = nil
+local skill_at = 0
 local bloom = 0            -- per-shot spread, degrees
 local extra = 0            -- current extra spread, degrees
 local last_t = os.clock()
@@ -99,6 +146,8 @@ local function update()
     if tonumber(get(pawn, "MovementState")) == STATE_AIR then e = e + CFG.airSpreadDeg end
     if tonumber(get(pawn, "RotationMode")) == ROT_AIMING then e = e * CFG.aimMultiplier end
     if tonumber(get(pawn, "Stance")) == STANCE_CROUCH then e = e * CFG.crouchMultiplier end
+    if now >= skill_at then skill_at = now + 5 pcall(read_skill, pawn) end
+    e = e * skill_mult
     extra = math.min(CFG.maxSpreadDeg, e)
 end
 
@@ -189,64 +238,83 @@ local function find_hud()
     return nil
 end
 
--- The crosshair opens up: each of its lines is moved outward along its own
--- direction by extra spread x reticlePixelsPerDeg. (Scaling the whole
--- crosshair made the lines longer and thicker, which read as bigger and
--- brighter, user 2026-10-18.) A line's direction comes from its name
--- (top/bottom/left/right) or else from its canvas position relative to the
--- other lines. The layout is written once to dlls\crosshair.txt.
-local DIR_WORDS = { { "top", 0, -1 }, { "up", 0, -1 }, { "bottom", 0, 1 }, { "down", 0, 1 },
-                    { "left", -1, 0 }, { "right", 1, 0 } }
+-- The crosshair opens up with the spread. The game's crosshair is ONE
+-- image with the four ticks drawn in (dlls\crosshair.txt, 2026-10-18), and
+-- scaling it made the ticks longer and thicker. So for the gun and precise
+-- gun crosshairs that image is hidden and four plain lines are added to the
+-- same canvas, in its colour; their gap is reticleGap + extra spread x
+-- reticlePixelsPerDeg. Hit and target markers are untouched; bow and melee
+-- crosshairs stay vanilla.
+local OWN_RETICLE = { UW_CrosshairGun = true, UW_CrosshairPreciseGun = true }
+local IMAGE_CLASS = nil
 local hud_addr, route, settle_until = nil, nil, 0
-local lines = nil          -- { route, dx, dy } for every crosshair line
+local reticles = nil       -- { { lines = { route, dx, dy } } }
 local shown_gap = -1
 
-local function collect_lines(hud)
+-- Children route helpers: index i >= 1 is GetChildAt(i - 1), 0 is a nested
+-- widget's root.
+local function add_lines(cw, cw_route)
+    local tree = get(cw, "WidgetTree")
+    local root = valid(tree) and get(tree, "RootWidget")              -- Border_0
+    if not valid(root) then return nil end
+    -- Border_0 > RetainerBox_1 > CanvasPanel_0
+    local retainer = call(root, "GetChildAt", 0)
+    local canvas = valid(retainer) and call(retainer, "GetChildAt", 0)
+    if not valid(canvas) then return nil end
+    local canvas_route = { table.unpack(cw_route) }
+    for _, st in ipairs({ 0, 1, 1 }) do canvas_route[#canvas_route + 1] = st end
+    -- The game's crosshair image: hide it, copy its colour.
+    local orig_i, color = nil, { R = 1, G = 0.72, B = 0.1, A = 1 }
+    local n = tonumber(call(canvas, "GetChildrenCount")) or 0
+    for i = 0, n - 1 do
+        local c = call(canvas, "GetChildAt", i)
+        if valid(c) and fname(c) == "Crosshair" then
+            orig_i = i
+            local col = get(c, "ColorAndOpacity")
+            local r, g, bl = col and tonumber(col.R), col and tonumber(col.G), col and tonumber(col.B)
+            if r and not (r > 0.95 and g > 0.95 and bl > 0.95) then color = { R = r, G = g, B = bl, A = 1 } end
+            call(c, "SetRenderOpacity", 0)
+        end
+    end
+    if not orig_i then return nil end
+    IMAGE_CLASS = IMAGE_CLASS or try(function() return StaticFindObject("/Script/UMG.Image") end)
+    if not valid(IMAGE_CLASS) then return nil end
+    local lines = {}
+    for _, d in ipairs({ { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }) do
+        local img = try(function() return StaticConstructObject(IMAGE_CLASS, tree) end)
+        local slot = valid(img) and call(canvas, "AddChildToCanvas", img)
+        if valid(slot) then
+            call(img, "SetColorAndOpacity", color)
+            call(slot, "SetAnchors", { Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } })
+            call(slot, "SetAlignment", { X = 0.5, Y = 0.5 })
+            local w, h = CFG.reticleThickness, CFG.reticleLength
+            if d[2] == 0 then w, h = CFG.reticleLength, CFG.reticleThickness end
+            call(slot, "SetSize", { X = w, Y = h })
+            local idx = (tonumber(call(canvas, "GetChildrenCount")) or 1) - 1
+            local r = { table.unpack(canvas_route) }
+            r[#r + 1] = idx + 1
+            lines[#lines + 1] = { route = r, dx = d[1], dy = d[2] }
+        end
+    end
+    return lines
+end
+
+local function setup(hud)
     local switcher = follow(hud, route)
-    if not switcher then return nil end
-    local found, dump = {}, {}
-    local function rec(w, depth, r)
-        if depth > 8 then return end
-        local name, cls = fname(w), fname(call(w, "GetClass")) or "?"
-        local n = tonumber(call(w, "GetChildrenCount")) or 0
-        local slot = get(w, "Slot")
-        local pos = valid(slot) and call(slot, "GetPosition")
-        local px, py = pos and tonumber(pos.X), pos and tonumber(pos.Y)
-        dump[#dump + 1] = string.format("%s%s (%s) slot=%s pos=%s", string.rep("  ", depth), name, cls,
-            valid(slot) and fname(call(slot, "GetClass")) or "-", px and string.format("%.0f,%.0f", px, py) or "-")
-        if cls == "Image" or cls:find("Border") and n == 0 then
-            found[#found + 1] = { route = r, name = name:lower(), px = px, py = py }
-        end
-        for i = 0, n do
-            local c = (i == 0) and child(w, 0) or child(w, i)
-            if c then
-                local rr = { table.unpack(r) }
-                rr[#rr + 1] = i
-                rec(c, depth + 1, rr)
-            end
-        end
-    end
-    rec(switcher, 0, route)
-    -- Direction: name first, else position relative to the lines' centre.
-    local cx, cy, k = 0, 0, 0
-    for _, f in ipairs(found) do if f.px then cx, cy, k = cx + f.px, cy + f.py, k + 1 end end
-    if k > 0 then cx, cy = cx / k, cy / k end
+    if not switcher then return {} end
     local out = {}
-    for _, f in ipairs(found) do
-        local dx, dy = nil, nil
-        for _, w in ipairs(DIR_WORDS) do
-            if f.name:find(w[1], 1, true) then dx, dy = w[2], w[3] break end
+    local n = tonumber(call(switcher, "GetChildrenCount")) or 0
+    for i = 0, n - 1 do
+        local cw = call(switcher, "GetChildAt", i)
+        local cls = valid(cw) and (fname(call(cw, "GetClass")) or ""):gsub("_C$", "")
+        if cls and OWN_RETICLE[cls] then
+            local r = { table.unpack(route) }
+            r[#r + 1] = i + 1
+            local lines = add_lines(cw, r)
+            if lines then out[#out + 1] = { lines = lines } end
         end
-        if not dx and f.px then
-            local ox, oy = f.px - cx, f.py - cy
-            local l = math.sqrt(ox * ox + oy * oy)
-            if l > 0.5 then dx, dy = ox / l, oy / l end
-        end
-        if dx then out[#out + 1] = { route = f.route, dx = dx, dy = dy } end
     end
-    local fh = io.open(ROOT .. "dlls\\crosshair.txt", "w")
-    if fh then fh:write(table.concat(dump, "\n") .. "\n") fh:close() end
-    log(string.format("crosshair: %d lines that move with the spread (layout in dlls\\crosshair.txt)", #out))
+    log(string.format("crosshair: own lines on %d gun crosshairs", #out))
     return out
 end
 
@@ -255,24 +323,27 @@ local function reticle(now)
     local hud = find_hud()
     if not hud then hud_addr = nil return end
     local a = LIB.address(hud)
-    if a ~= hud_addr then hud_addr, route, lines, settle_until, shown_gap = a, nil, nil, now + 10, -1 end
+    if a ~= hud_addr then hud_addr, route, reticles, settle_until, shown_gap = a, nil, nil, now + 10, -1 end
     if now < settle_until then return end
     if route == nil then
         route = find_route(hud, 0, {}, "CrosshairSwitcher") or false
         if not route then log("crosshair NOT found (CrosshairSwitcher)") end
     end
     if not route then return end
-    if not lines then
-        lines = collect_lines(hud) or {}
-        -- Undo the earlier whole-crosshair scaling, if a session had it.
+    if not reticles then
         local sw = follow(hud, route)
-        if sw then call(sw, "SetRenderScale", { X = 1, Y = 1 }) end
+        if sw then call(sw, "SetRenderScale", { X = 1, Y = 1 }) end   -- undo the old scaling
+        reticles = setup(hud)
     end
-    local gap = extra * CFG.reticlePixelsPerDeg
+    local gap = CFG.reticleGap + extra * CFG.reticlePixelsPerDeg
     if math.abs(gap - shown_gap) < 0.5 then return end
-    for _, l in ipairs(lines) do
-        local w = follow(hud, l.route)
-        if w then call(w, "SetRenderTranslation", { X = l.dx * gap, Y = l.dy * gap }) end
+    local off = gap + CFG.reticleLength / 2
+    for _, rt in ipairs(reticles) do
+        for _, l in ipairs(rt.lines) do
+            local img = follow(hud, l.route)
+            local slot = img and get(img, "Slot")
+            if valid(slot) then call(slot, "SetPosition", { X = l.dx * off, Y = l.dy * off }) end
+        end
     end
     shown_gap = gap
 end
