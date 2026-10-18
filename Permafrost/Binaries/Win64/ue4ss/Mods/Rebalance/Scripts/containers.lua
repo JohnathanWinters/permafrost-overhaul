@@ -94,6 +94,24 @@ end
 -- (user 2026-10-18): it is always untouched. Once opened it is decided and
 -- never touched again, so it stays empty after you take the loot.
 local padlock_class = nil
+-- Locations of locked padlocks (plain numbers), rebuilt at most every 2 s:
+-- a streamed-in area brings hundreds of containers at once.
+local lock_cache, lock_cache_at = {}, -1
+local function locked_padlocks()
+    local now = os.clock()
+    if now - lock_cache_at < 2 then return lock_cache end
+    lock_cache_at = now
+    lock_cache = {}
+    for _, pl in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
+        if valid(pl) and LIB.get(pl, "bLocked") == true then
+            local o = LIB.call(pl, "GetOwner")
+            local ol = valid(o) and LIB.call(o, "K2_GetActorLocation")
+            if ol then lock_cache[#lock_cache + 1] = { ol.X, ol.Y, ol.Z } end
+        end
+    end
+    return lock_cache
+end
+
 -- Its own padlock, or a locked padlock on another actor within 1.5 m (some
 -- boxes keep the lock on a separate actor next to the container).
 local function is_locked(a)
@@ -103,12 +121,8 @@ local function is_locked(a)
     local l = LIB.call(a, "K2_GetActorLocation")
     if not l then return false end
     local x, y, z = l.X, l.Y, l.Z
-    for _, pl in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
-        if valid(pl) and LIB.get(pl, "bLocked") == true then
-            local o = LIB.call(pl, "GetOwner")
-            local ol = valid(o) and LIB.call(o, "K2_GetActorLocation")
-            if ol and (ol.X - x) ^ 2 + (ol.Y - y) ^ 2 + (ol.Z - z) ^ 2 < 150 * 150 then return true end
-        end
+    for _, p in ipairs(locked_padlocks()) do
+        if (p[1] - x) ^ 2 + (p[2] - y) ^ 2 + (p[3] - z) ^ 2 < 150 * 150 then return true end
     end
     return false
 end
@@ -177,6 +191,10 @@ local function consider(a, name)
     local opened = try(function() return a.bEverOpened end)
     local quest = try(function() return a.QuestStorageID end)
     local quest_path = quest and soft_path(quest)
+    -- Locked means never looted, whatever the save says: a box the game
+    -- re-locked (it does not save padlocks) is filled again (2026-10-18).
+    local locked = is_locked(a)
+    if locked then opened = false end
     if opened == true or (quest_path and quest_path ~= "" and quest_path ~= "None") or not rules.profile_for(PROFILES, cls) then
         ignored[name] = true
         stats_c.skipped = stats_c.skipped + 1
@@ -184,7 +202,7 @@ local function consider(a, name)
         -- Plain numbers: a struct returned by a game call must not be kept
         -- past the call (suspected cause of a crash inside UE4SS, 2026-10-17).
         local v = LIB.call(a, "K2_GetActorLocation")
-        watch[name] = { loc = v and { X = v.X, Y = v.Y, Z = v.Z } or nil, locked = is_locked(a) }
+        watch[name] = { loc = v and { X = v.X, Y = v.Y, Z = v.Z } or nil, locked = locked }
     end
 end
 local first_scan = true

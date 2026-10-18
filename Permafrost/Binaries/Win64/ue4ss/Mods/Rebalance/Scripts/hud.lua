@@ -67,7 +67,16 @@ local PARTS = {
 }
 local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" } }
 -- Never walked into: the compass and its markers, the crosshairs.
-local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true }
+local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true,
+                  Canvas_WorldIndicators = true, Canvas_WorldMapMarkers = true }
+-- The health bar (bottom left) and toolbelt (bottom right) are not in
+-- Canvas_BaseHUD (user 2026-10-18), so the whole HUD is walked, matching
+-- these words in a widget's name or class (lowercase). Menus and radial
+-- menus are never entered.
+local WORDS = {
+    { "health", { "statuspanel", "charstatus", "statstatus", "healthbar", "vitals", "playerstats" } },
+    { "hotbar", { "toolbelt", "quickslot", "hotbar", "quickbar", "beltslot" } },
+}
 
 ------------------------------------------------------------------ widget tree
 -- Children of a widget: panel slots first, then a nested UserWidget's root
@@ -94,10 +103,16 @@ end
 
 local function cls_name(w) return fname(call(w, "GetClass")) or "?" end
 
-local function group_of(name)
+local function group_of(name, cls)
     if PARTS[name] then return PARTS[name] end
     for _, p in ipairs(PREFIXES) do
         if name:sub(1, #p[1]) == p[1] then return p[2] end
+    end
+    local text = (name .. " " .. (cls or "")):lower()
+    for _, g in ipairs(WORDS) do
+        for _, w in ipairs(g[2]) do
+            if text:find(w, 1, true) then return g[1] end
+        end
     end
     return nil
 end
@@ -142,8 +157,7 @@ local hud_addr = nil
 local dumped = false
 
 local function scan(hud)
-    local base = find_base(hud)
-    if not base then return false end
+    if not find_base(hud) then return false end   -- HUD not built yet
     routes = { health = {}, hotbar = {}, quest = {}, weapon = {} }
     bars, quest_texts = {}, {}
     local dump = (CFG.debugLog == 1 and not dumped) and {} or nil
@@ -159,9 +173,10 @@ local function scan(hud)
     local function rec(w, depth, route)
         if depth > 12 then return end
         local name = fname(w)
-        local g = group_of(name)
-        if dump and #dump < 400 then
-            dump[#dump + 1] = string.rep("  ", depth) .. name .. " (" .. cls_name(w) .. ")" .. (g and ("  <- " .. g) or "")
+        local cls = cls_name(w)
+        local g = group_of(name, cls)
+        if dump and #dump < 500 then
+            dump[#dump + 1] = string.rep("  ", depth) .. name .. " (" .. cls .. ")" .. (g and ("  <- " .. g) or "")
         end
         if g then
             local list = routes[g]
@@ -170,14 +185,14 @@ local function scan(hud)
             if g == "quest" then inner(w, 0, route, quest_texts, "TextBlock") end
             return
         end
-        if NO_WALK[name] then return end
+        if NO_WALK[name] or cls:find("Menu", 1, true) or cls:find("Radial", 1, true) then return end
         each_child(w, function(c, i)
             local r = { table.unpack(route) }
             r[#r + 1] = i
             rec(c, depth + 1, r)
         end)
     end
-    rec(follow(hud, base), 0, base)
+    rec(hud, 0, {})
     if dump then
         dumped = true
         local f = io.open(ROOT .. "dlls\\hud_tree.txt", "w")
