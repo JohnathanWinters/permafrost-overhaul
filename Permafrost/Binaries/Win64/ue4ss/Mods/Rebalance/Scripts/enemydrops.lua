@@ -254,6 +254,41 @@ game_loop(1000, function()
     if not ok then log("death watch error: " .. tostring(err)) end
 end)
 
+-- Item references come from loaded loot tables, and a death found none for
+-- the cultists' bow or for cloth (2026-10-18: no gun, cloth FAILED on every
+-- kill). Loading at the death crashed once, so the tables holding cloth and
+-- every mapped enemy weapon are loaded here instead: from the game loop,
+-- one table every 5 s, never within 5 s of a death. A table the game
+-- unloads again is simply loaded again on a later pass.
+local last_death_seen = 0
+local preload_logged = {}
+local function preload_pass()
+    if not enemy_weapon_item then return end
+    for _, path in ipairs(tracked) do
+        local npc = resolve(path)
+        if npc and try(function() return npc.bIsDead end) == true then last_death_seen = os.clock() end
+    end
+    if os.clock() - last_death_seen < 5 then return end
+    local wanted = { "DA_Resource_Cloth" }
+    for _, item in pairs(enemy_weapon_item) do wanted[#wanted + 1] = item end
+    for _, name in ipairs(wanted) do
+        if not soft_ref(name) then
+            local got = soft_ref(name, true)
+            if not preload_logged[name] then
+                preload_logged[name] = true
+                log(string.format("preloaded the loot table for %s: %s", name, got and "ok" or "not found"))
+            end
+            return                                      -- one load per pass
+        end
+    end
+end
+local preload_at = os.clock() + 30
+game_loop(5000, function()
+    if os.clock() < preload_at then return end
+    local ok, err = pcall(preload_pass)
+    if not ok then log("preload error: " .. tostring(err)) end
+end)
+
 DATA.start()
 
 log(string.format("loaded: gun drop %.0f%%, cloth %.0f%%", CFG.enemyGunDrop * 100, CFG.enemyClothChance * 100))

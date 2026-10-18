@@ -33,7 +33,8 @@ Simplest first.
 - Snowfall 3x as likely, blizzards 1.75x. Snowfall stays more common.
 
 ### survivaltweaks
-- 1.5x damage taken, 0.2x hunger, 2x body warmth loss.
+- 1.5x damage taken, 0.2x hunger.
+- Body warmth drains slower (0.12x), still faster the further the cold is past your clothing.
 
 ### locks
 - Unlocked boxes stay unlocked after a reload.

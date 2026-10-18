@@ -244,7 +244,7 @@ return {
         hungerDrainMultiplier      = 0.2   , -- vanilla 1.0   hunger
         energyDrainMultiplier      = 1.0   , -- vanilla 1.0   energy (tiredness)
         healthDamageMultiplier     = 1.5   , -- vanilla 1.0   damage you take
-        bodyWarmthLossMultiplier   = 2.0   , -- vanilla 1.0   body warmth loss in the cold
+        bodyWarmthLossMultiplier   = 0.12  , -- vanilla 1.0   body warmth loss in the cold (the game already scales it with how far the cold is past your clothing)
     },
 
     -- MOVEMENT: Sprint and crouch.

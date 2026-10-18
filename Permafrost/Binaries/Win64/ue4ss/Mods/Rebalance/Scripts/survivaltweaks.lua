@@ -18,7 +18,7 @@ local DEFAULTS = {
     { "hungerDrainMultiplier",    0.2, "hunger drain" },
     { "energyDrainMultiplier",    1.0, "energy drain" },
     { "healthDamageMultiplier",   1.5, "damage you take" },
-    { "bodyWarmthLossMultiplier", 2.0, "body warmth loss" },
+    { "bodyWarmthLossMultiplier", 0.12, "body warmth loss" },
 }
 local function load_config()
     local cfg = {}

@@ -1552,7 +1552,7 @@ PreExecFn g_pre_stamina = nullptr, g_pre_base = nullptr;
 std::atomic<uintptr_t> g_survival_asc{0};
 // stamina, hunger, energy, health, warmth (float bits, 1.0 = vanilla)
 std::atomic<uint32_t> g_surv_mult[5] = {0x3F800000, 0x3F800000, 0x3F800000, 0x3F800000, 0x3F800000};
-std::atomic<int> g_surv_logged{0};
+std::atomic<int> g_surv_logged[5]{};   // per stat, so hunger's steady ticks do not hide the others
 bool g_survival_hooked = false, g_survival_failed = false;
 FILETIME g_survival_time{};
 uintptr_t g_set_stamina = 0, g_set_health = 0, g_set_temp = 0;
@@ -1598,8 +1598,8 @@ void survival_scale(void* data) {
     if (mult == 1.0f) return;
     const float before = magnitude;
     magnitude = before * mult;
-    int n = g_surv_logged.fetch_add(1) + 1;
-    if (n <= 10) logf(L"survival: %ls %.3f -> %.3f (x%.2f)", kSurvivalNames[i], before, magnitude, mult);
+    int n = g_surv_logged[i].fetch_add(1) + 1;
+    if (n <= 5) logf(L"survival: %ls %.3f -> %.3f (x%.2f)", kSurvivalNames[i], before, magnitude, mult);
 }
 
 bool pre_stamina_hook(void* self, void* data) {
