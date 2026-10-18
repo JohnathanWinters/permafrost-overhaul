@@ -1,0 +1,23 @@
+# Build output
+src/obj/
+*.exp
+*.lib
+*.pdb
+
+# Built native module: shipped in Releases, built from src/
+Permafrost/Binaries/Win64/ue4ss/Mods/Rebalance/dlls/
+
+# Rebuilt from config.lua at every game start
+Permafrost/Binaries/Win64/ue4ss/Mods/Rebalance/config/
+Permafrost/Binaries/Win64/ue4ss/Mods/Rebalance/survivaltweaks/
+
+# Logs and reports written while playing
+*.log
+rebalance_applied.json
+loot_census.txt
+loot_assets.txt
+hud_tree.txt
+
+# Local notes
+CLAUDE.md
+memory/
