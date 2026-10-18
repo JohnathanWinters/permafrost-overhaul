@@ -134,9 +134,48 @@ end
 -- Radius we last set per component; anything else came from the game.
 local range_set = {}
 local range_logged = 0
+-- The game applies a flashlight mode's Settings (DA_FlashlightMode_Far /
+-- _Wide) each time the light turns on, so rescaling only the light showed
+-- the vanilla beam for up to 2 s first (user 2026-10-18). The modes' radius
+-- is scaled once instead; vanilla -> scaled radius is kept per mode, so a
+-- light still at a vanilla radius (lit before the edit) is moved to the
+-- scaled one without ever scaling twice.
+local mode_radius = {}      -- vanilla radius -> scaled radius
+local scaled_values = {}    -- scaled radius -> true
+-- Every pass: the mode assets found by class (cheap), any at a radius we
+-- did not set is scaled (they may be reloaded from disk at vanilla).
+local function scale_modes()
+    if CFG.rangeMultiplier == 1.0 then return end
+    for _, a in ipairs(try(function() return FindAllOf("Data_FlashlightMode") end) or {}) do
+        if valid(a) and not fname(a):find("^Default__") then
+            local st = get(a, "Settings")
+            local r = st and tonumber(get(st, "AttenuationRadius"))
+            local ours = false
+            for v in pairs(scaled_values) do if r and math.abs(v - r) < 1 then ours = true end end
+            if r and not ours then
+                local nr = r * CFG.rangeMultiplier
+                LIB.set(st, "AttenuationRadius", nr)
+                local now = tonumber(get(st, "AttenuationRadius"))
+                if now and math.abs(now - nr) < 1 then
+                    mode_radius[r] = nr
+                    scaled_values[nr] = true
+                    log(string.format("%s range %.0f -> %.0f m", fname(a), r / 100, nr / 100))
+                end
+            end
+        end
+    end
+end
+
 local function fix_range(comp, addr)
     if CFG.rangeMultiplier == 1.0 then return end
     local rad = tonumber(get(comp, "AttenuationRadius"))
+    if next(mode_radius) ~= nil then
+        -- Modes are scaled: only move a light still at a vanilla mode radius.
+        for v, sc in pairs(mode_radius) do
+            if rad and math.abs(rad - v) < 1 then call(comp, "SetAttenuationRadius", sc) end
+        end
+        return
+    end
     if not rad or (range_set[addr] and math.abs(rad - range_set[addr]) < 1) then return end
     local nr = rad * CFG.rangeMultiplier
     call(comp, "SetAttenuationRadius", nr)
@@ -148,6 +187,7 @@ local function fix_range(comp, addr)
 end
 
 local function pass()
+    scale_modes()
     local pawn = player_pawn()
     local pawn_addr = pawn and LIB.address(pawn)
     if not pawn_addr then return end
