@@ -147,6 +147,9 @@ return {
         castShadows                  = 1     , -- vanilla 0     1 = the flashlight casts shadows
         pitchUpDegrees               = 6     , -- vanilla 0     aim the beam this many degrees higher
         rangeMultiplier              = 3.0   , -- vanilla 1.0   how far the light reaches (vanilla about 6 m)
+        sourceRadiusCm               = 3     , -- vanilla 25    size of the light source: smaller = sharper shadows
+        shadowSharpen                = 0.5   , -- vanilla 0     extra shadow edge sharpening, 0 to 1
+        shadowResolution             = 2.0   , -- vanilla 1.0   shadow detail
         offsetDownCm                 = 25    , -- vanilla 0     light sits this far below your eyes, so its shadows show
         offsetRightCm                = 20    , -- vanilla 0     and this far to the right
         debugLog                     = 1     , -- vanilla -     1 = log what was found

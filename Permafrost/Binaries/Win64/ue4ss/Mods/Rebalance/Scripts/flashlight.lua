@@ -22,6 +22,9 @@ local DEFAULTS = {
     { "castShadows",     1,   "1 = the flashlight casts shadows" },
     { "pitchUpDegrees",  6,   "aim the beam this many degrees higher" },
     { "rangeMultiplier", 3.0, "how far the light reaches" },
+    { "sourceRadiusCm",  3,   "size of the light source: smaller = sharper shadows (vanilla 25)" },
+    { "shadowSharpen",   0.5, "extra shadow edge sharpening, 0 to 1 (vanilla 0)" },
+    { "shadowResolution", 2.0, "shadow detail, 1 = vanilla" },
     { "offsetDownCm",    25,  "move the light below your eyes; a light at the eye hides its own shadows" },
     { "offsetRightCm",   20,  "move the light to the right (held in the right hand / chest strap)" },
     { "debugLog",        1,   "1 = log what was found" },
@@ -83,8 +86,18 @@ local function enforce_shadows(comp)
     if get(comp, "bCastShadowsFromCinematicObjectsOnly") == true then
         LIB.set(comp, "bCastShadowsFromCinematicObjectsOnly", false) changed = true
     end
+    -- Sharper shadows (user 2026-10-18): the flashlight is a 25 cm source
+    -- with 14 cm of extra softness, which blurs every shadow edge.
     local res = tonumber(get(comp, "ShadowResolutionScale"))
-    if res and res < 1 then LIB.set(comp, "ShadowResolutionScale", 1.0) changed = true end
+    if res and math.abs(res - CFG.shadowResolution) > 0.01 then
+        LIB.set(comp, "ShadowResolutionScale", CFG.shadowResolution) changed = true
+    end
+    local sr = tonumber(get(comp, "SourceRadius"))
+    if sr and math.abs(sr - CFG.sourceRadiusCm) > 0.01 then call(comp, "SetSourceRadius", CFG.sourceRadiusCm) end
+    local ssr = tonumber(get(comp, "SoftSourceRadius"))
+    if ssr and ssr > 0 then call(comp, "SetSoftSourceRadius", 0) end
+    local sh = tonumber(get(comp, "ShadowSharpen"))
+    if sh and math.abs(sh - CFG.shadowSharpen) > 0.01 then LIB.set(comp, "ShadowSharpen", CFG.shadowSharpen) changed = true end
     if get(comp, "CastShadows") ~= true or changed then
         -- Toggling through the setter re-creates the light's render state.
         call(comp, "SetCastShadows", false)
