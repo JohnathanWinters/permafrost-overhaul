@@ -165,7 +165,7 @@ local function switches(mat)
     return #out > 0 and table.concat(out, ", ") or "none readable"
 end
 
-local stats = { parts = 0, mats = 0, swapped = 0, skipped = 0, sheltered = 0 }
+local stats = { parts = 0, mats = 0, swapped = 0, skipped = 0, sheltered = 0, cleared = 0 }
 local verified, described = false, false
 local function snow_material(c, i, old, parent)
     if not CFG.swapMaterial or not parent then return old end
@@ -192,11 +192,31 @@ local function snow_material(c, i, old, parent)
 end
 
 -- Only parts open to the sky get snow (user 2026-10-18: snow showed on the
--- repair bench inside the building). A trace goes straight up from just
--- above the part's top, at its centre; anything within shelterMetres
--- (a roof, a ceiling, another storey) means sheltered.
+-- repair bench inside the building). Traces go straight up from the part's
+-- middle, ignoring the part itself (a trace from the top started level with
+-- the roof on top of walls), at 3 points along its longer side (a single
+-- centre trace let one wall slip past a roof edge). Anything within
+-- shelterMetres (a roof, a ceiling, another storey) means sheltered. The
+-- ground does not count: foundations sit partly in it, so a ground hit is
+-- traced again from the part's top.
 local helpers_cache = nil
 local trace_warned, shelter_logged = false, 0
+local NOCOLOR = { R = 0, G = 0, B = 0, A = 0 }
+
+local function trace_up(ksl, actor, x, y, z0, z1, ignore_self)
+    local hit = {}
+    local blocked = try(function()
+        return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = z0 }, { X = x, Y = y, Z = z1 },
+            0, false, ignore_self and { actor } or {}, 0, hit, true, NOCOLOR, NOCOLOR, 0.0)
+    end)
+    local o = hit.HitObjectHandle and try(function() return hit.HitObjectHandle.Actor:Get() end)
+    if not valid(o) then
+        local c = try(function() return hit.Component:Get() end) or hit.Component
+        o = valid(c) and call(c, "GetOwner")
+    end
+    return blocked, valid(o) and o or nil
+end
+
 local function sheltered(actor)
     local limit = (tonumber(CFG.shelterMetres) or 0) * 100
     if limit <= 0 then return false end
@@ -205,57 +225,99 @@ local function sheltered(actor)
     if not ksl then return false end
     local origin, extent = {}, {}
     try(function() actor:GetActorBounds(true, origin, extent, false) end)
-    local x, y = tonumber(origin.X), tonumber(origin.Y)
-    local top = tonumber(origin.Z) and tonumber(extent.Z) and (origin.Z + extent.Z)
-    if not (x and y and top) then
+    local x, y, mid = tonumber(origin.X), tonumber(origin.Y), tonumber(origin.Z)
+    local ex, ey, ez = tonumber(extent.X) or 0, tonumber(extent.Y) or 0, tonumber(extent.Z) or 0
+    if not (x and y and mid) then
         local p = call(actor, "K2_GetActorLocation")
         if not p then return false end
-        x, y, top = p.X, p.Y, p.Z + 50
+        x, y, mid, ex, ey, ez = p.X, p.Y, p.Z, 0, 0, 50
     end
-    -- From the part's middle, ignoring the part itself: a trace from its
-    -- top started level with (or above) the roof on top of walls, so walls
-    -- under a roof got snow inside (2026-10-18). Falls back to the top.
-    local hit = {}
-    local mid = tonumber(origin.Z) or (top - 50)
-    local blocked = try(function()
-        return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = mid }, { X = x, Y = y, Z = top + limit },
-            0, false, { actor }, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
-    end)
-    local function hit_actor()
-        local o = hit.HitObjectHandle and try(function() return hit.HitObjectHandle.Actor:Get() end)
-        if not valid(o) then
-            local c = try(function() return hit.Component:Get() end) or hit.Component
-            o = valid(c) and call(c, "GetOwner")
+    local top = mid + ez
+    local points = { { x, y } }
+    if ex >= ey and ex > 30 then
+        points[2] = { x - ex * 0.6, y }
+        points[3] = { x + ex * 0.6, y }
+    elseif ey > 30 then
+        points[2] = { x, y - ey * 0.6 }
+        points[3] = { x, y + ey * 0.6 }
+    end
+    for _, pt in ipairs(points) do
+        local blocked, o = trace_up(ksl, actor, pt[1], pt[2], mid, top + limit, true)
+        if blocked == true and o and LIB.address(o) == LIB.address(actor) then blocked = nil end  -- ignore list not honoured
+        if blocked == true and o and (fname(o) or ""):find("^Landscape") then blocked = nil end   -- the ground, not a roof
+        if blocked == nil then
+            blocked, o = trace_up(ksl, actor, pt[1], pt[2], top + 15, top + 15 + limit, false)
+            if blocked == true and o and (fname(o) or ""):find("^Landscape") then blocked = false end
         end
-        return valid(o) and o or nil
+        if blocked == nil and not trace_warned then
+            trace_warned = true
+            log("roof check: the trace failed, parts are treated as open to the sky")
+        end
+        if blocked == true then
+            if shelter_logged < 8 then
+                shelter_logged = shelter_logged + 1
+                log(string.format("roof check: %s is under %s", fname(actor), o and fname(o) or "something"))
+            end
+            return true
+        end
     end
-    if blocked == true then
-        local o = hit_actor()
-        if o and LIB.address(o) == LIB.address(actor) then blocked = nil end   -- hit itself: ignore list not honoured
+    return false
+end
+
+-- The material's own snow switch, nearest in its parent chain.
+local function snow_switch(mat)
+    local m = mat
+    for _ = 1, 6 do
+        local found = nil
+        for _, field in ipairs({ "StaticParametersRuntime", "StaticParameters" }) do
+            try(function()
+                m[field].StaticSwitchParameters:ForEach(function(_, e)
+                    local s = e:get()
+                    if found == nil and try(function() return s.ParameterInfo.Name:ToString() end) == "Enable (Snow)" then
+                        found = try(function() return s.Value end) == true
+                    end
+                end)
+            end)
+            if found ~= nil then return found end
+        end
+        local p = get(m, "Parent")
+        if not valid(p) then break end
+        m = p
     end
-    if blocked == nil then
-        hit = {}
-        blocked = try(function()
-            return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = top + 15 }, { X = x, Y = y, Z = top + 15 + limit },
-                0, false, {}, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
-        end)
+    return false
+end
+
+-- Sheltered parts whose own material has snow in vanilla (the stove: snow
+-- inside the base before this mod, user 2026-10-18) get coverage 0. A shared
+-- material gets a copy for this one part first, so nothing else changes.
+local cleared_logged = 0
+local function clear_snow(actor)
+    for _, c in ipairs(part_meshes(actor)) do
+        local n = tonumber(call(c, "GetNumMaterials")) or 0
+        for i = 0, n - 1 do
+            local mat = call(c, "GetMaterial", i)
+            if valid(mat) and not (fname(c) or ""):find("^Arrow") and snow_switch(mat) then
+                if fname(call(mat, "GetClass")) ~= "MaterialInstanceDynamic" then
+                    mat = call(c, "CreateDynamicMaterialInstance", i, mat, FName("None"))
+                end
+                if valid(mat) then
+                    call(mat, "SetScalarParameterValue", FName("Coverage (Snow)"), 0.0)
+                    stats.cleared = stats.cleared + 1
+                    if cleared_logged < 5 then
+                        cleared_logged = cleared_logged + 1
+                        log(string.format("cleared vanilla snow on %s (%s), it is under a roof", fname(actor), fname(mat)))
+                    end
+                end
+            end
+        end
     end
-    if blocked == nil and not trace_warned then
-        trace_warned = true
-        log("roof check: the trace failed, parts are treated as open to the sky")
-    end
-    if blocked == true and shelter_logged < 8 then
-        shelter_logged = shelter_logged + 1
-        local o = hit_actor()
-        log(string.format("roof check: %s is under %s", fname(actor), o and fname(o) or "something"))
-    end
-    return blocked == true
 end
 
 local function snow_part(actor)
     if sheltered(actor) then
         stats.sheltered = stats.sheltered + 1
         stats.parts = stats.parts + 1
+        clear_snow(actor)
         return
     end
     local parent = CFG.swapMaterial and find_snow_parent() or nil
@@ -327,8 +389,8 @@ game_loop(1000, function()
         end
         if #queue == 0 and stats.parts ~= reported then
             reported = stats.parts
-            log(string.format("snow on %d of %d built parts (%d under a roof skipped; %d materials set, %d rebuilt on the snow material, %d shared left alone)",
-                stats.parts - stats.sheltered, stats.parts, stats.sheltered, stats.mats, stats.swapped, stats.skipped))
+            log(string.format("snow on %d of %d built parts (%d under a roof, %d vanilla snow cleared there; %d materials set, %d rebuilt on the snow material, %d shared left alone)",
+                stats.parts - stats.sheltered, stats.parts, stats.sheltered, stats.cleared, stats.mats, stats.swapped, stats.skipped))
         end
     end)
     if not ok then log("error: " .. tostring(err)) end
