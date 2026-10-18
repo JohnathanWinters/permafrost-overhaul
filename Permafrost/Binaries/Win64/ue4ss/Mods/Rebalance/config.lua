@@ -30,6 +30,7 @@ return {
         warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
         weather                    = 1     , -- Scripts/weather.lua          storms and snowfall come more often
         travelcost                 = 1     , -- Scripts/travelcost.lua       fast travel costs food (hotbar first)
+        doors                      = 1     , -- Scripts/doors.lua            doors and shutters keep their state across saves (now: discovery only)
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
     },

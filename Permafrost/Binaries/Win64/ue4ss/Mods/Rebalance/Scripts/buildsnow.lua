@@ -137,6 +137,44 @@ local function log_part(actor)
     end)
 end
 
+-- Built parts showed 0 mesh components (2026-10-18): building meshes are
+-- probably instanced, drawn by a grid/manager actor. Once in the world,
+-- every instanced mesh component whose owner's class mentions building is
+-- listed with its materials (and their scalar parameters).
+local ism_done = false
+local function log_instanced()
+    if ism_done then return end
+    ism_done = true
+    local owners, n = {}, 0
+    for _, c in ipairs(try(function() return FindAllOf("InstancedStaticMeshComponent") end) or {}) do
+        if valid(c) and not fname(c):find("^Default__") then
+            local o = call(c, "GetOwner")
+            local oc = valid(o) and fname(call(o, "GetClass")) or "?"
+            local l = oc:lower()
+            if l:find("build") or l:find("grid") or l:find("part") then
+                n = n + 1
+                owners[oc] = (owners[oc] or 0) + 1
+                local m = tonumber(call(c, "GetNumMaterials")) or 0
+                for i = 0, m - 1 do
+                    if mat_count >= CFG.maxMaterials then break end
+                    local mat = call(c, "GetMaterial", i)
+                    local mn = valid(mat) and fname(mat)
+                    if mn and not seen_mats[mn] then
+                        seen_mats[mn] = true
+                        mat_count = mat_count + 1
+                        local params, snow = scalar_params(mat)
+                        log(string.format("instanced material %d (%s on %s): %s | scalars: %s%s", mat_count, fname(c), oc,
+                            parent_chain(mat), #params > 0 and table.concat(params, ", ") or "none", snow and "  <- HAS SNOW" or ""))
+                    end
+                end
+            end
+        end
+    end
+    local parts = {}
+    for k, v in pairs(owners) do parts[#parts + 1] = k .. " x" .. v end
+    log(string.format("instanced building meshes: %d components (%s)", n, #parts > 0 and table.concat(parts, ", ") or "none"))
+end
+
 local settle = os.clock() + 15
 local scanned = false
 local world_at, rescan_at, logged_zero = nil, 0, false
@@ -170,6 +208,7 @@ game_loop(1000, function()
                 log(string.format("built parts found: %d new", n))
             end
         end
+        if scanned then pcall(log_instanced) end
         if mat_count >= CFG.maxMaterials then queue = {} return end
         local list = queue
         queue = {}

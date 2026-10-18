@@ -506,6 +506,7 @@ void read_combat();      // headshots, below
 void read_toolbelt();    // toolbelt, below
 void read_reverb();      // hall reverb, below
 void write_animal_refused();  // animal spawn blocker, below
+void read_travel();      // fast travel food cost, below
 void install_reverb();
 void read_survival();    // survival rates, below
 
@@ -521,6 +522,7 @@ void tick() {
     install_reverb();
     read_reverb();
     write_animal_refused();
+    read_travel();
     read_survival();
     if (g_patched_count.load() > 0 && now >= g_next_stats) {
         g_next_stats = now + 60000;
@@ -1264,6 +1266,129 @@ void read_reverb() {
     LeaveCriticalSection(&g_rev_lock);
 }
 
+// ---- fast travel food cost ------------------------------------------------------------
+// User 2026-10-18: fast travel costs food. The map's confirm calls
+// UFastTravelAccessPoint::TravelTo(Actor, PlayerController) natively, so no
+// Lua hook sees the trip. This detours TravelTo: with less food than the
+// cost (both from travelcost.lua via dlls\travel.txt) the trip is refused;
+// otherwise it runs and a paid counter goes up, which this writes to
+// dlls\travel_paid.txt for travelcost.lua to take the food. The function
+// starts with `test r8,r8; je far` (a relative jump), so the trampoline
+// rebuilds that check with an absolute jump. Signature-checked, fails closed.
+using TravelToFn = void (*)(void* self, void* actor, void* pc);
+TravelToFn g_travel_tramp = nullptr;
+std::atomic<int> g_travel_food{-1}, g_travel_cost{0};
+std::atomic<int> g_travel_paid{0}, g_travel_refused{0};
+int g_travel_written = -1;
+FILETIME g_travel_time{};
+
+void travel_detour(void* self, void* actor, void* pc) {
+    const int cost = g_travel_cost.load(), food = g_travel_food.load();
+    if (pc && cost > 0 && food >= 0 && food < cost) {
+        int n = g_travel_refused.fetch_add(1) + 1;
+        logf(L"fast travel refused #%d: %d food on you, trip costs %d", n, food, cost);
+        return;
+    }
+    if (pc && cost > 0) g_travel_paid.fetch_add(1);
+    g_travel_tramp(self, actor, pc);
+}
+
+void install_travel_cost() {
+    // test r8,r8 | je rel32 | push rbp | push rsi | push r14 | sub rsp,0D0h | mov rax,[rip+x] | xor rax,rsp
+    static const int16_t sig[] = {0x4D, 0x85, 0xC0, 0x0F, 0x84, -1, -1, -1, -1, 0x55, 0x56, 0x41, 0x56,
+                                  0x48, 0x81, 0xEC, 0xD0, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x05, -1, -1, -1, -1,
+                                  0x48, 0x33, 0xC4, 0x48, 0x89};
+    auto base = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    uint8_t* found = nullptr;
+    int matches = 0;
+    for (int si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) {
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        uint8_t* q = base + sec->VirtualAddress;
+        size_t n = sec->Misc.VirtualSize;
+        for (size_t i = 0; i + 64 < n; ++i) {
+            if (q[i] != 0x4D || q[i + 1] != 0x85 || q[i + 9] != 0x55) continue;
+            bool ok = true;
+            for (size_t k = 0; k < sizeof(sig) / sizeof(sig[0]); ++k) {
+                if (sig[k] >= 0 && q[i + k] != static_cast<uint8_t>(sig[k])) { ok = false; break; }
+            }
+            if (ok) { found = q + i; ++matches; }
+        }
+    }
+    if (matches != 1) {
+        logf(L"fast travel cost OFF: TravelTo signature found %d times (need 1)", matches);
+        return;
+    }
+    int32_t rel = 0;
+    memcpy(&rel, found + 5, 4);
+    const uint64_t je_target = reinterpret_cast<uint64_t>(found + 9) + rel;
+    auto tramp = static_cast<uint8_t*>(VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    if (!tramp) { logf(L"fast travel cost OFF: VirtualAlloc failed"); return; }
+    uint8_t* t = tramp;
+    const uint8_t test_r8[] = {0x4D, 0x85, 0xC0};
+    memcpy(t, test_r8, 3); t += 3;
+    const uint8_t jne_skip[] = {0x75, 0x0E};                 // jne +14 (over the absolute jmp)
+    memcpy(t, jne_skip, 2); t += 2;
+    const uint8_t jmp_abs[] = {0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
+    memcpy(t, jmp_abs, 6); t += 6;
+    memcpy(t, &je_target, 8); t += 8;
+    memcpy(t, found + 9, 11); t += 11;                       // push rbp; push rsi; push r14; sub rsp,0D0h
+    memcpy(t, jmp_abs, 6); t += 6;
+    const uint64_t back = reinterpret_cast<uint64_t>(found + 20);
+    memcpy(t, &back, 8);
+    g_travel_tramp = reinterpret_cast<TravelToFn>(tramp);
+
+    uint8_t patch[20];
+    memcpy(patch, jmp_abs, 6);
+    const uint64_t to = reinterpret_cast<uint64_t>(&travel_detour);
+    memcpy(patch + 6, &to, 8);
+    memset(patch + 14, 0x90, 6);
+    DWORD old = 0;
+    if (!VirtualProtect(found, 20, PAGE_EXECUTE_READWRITE, &old)) { logf(L"fast travel cost OFF: VirtualProtect failed"); return; }
+    memcpy(found, patch, 20);
+    VirtualProtect(found, 20, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), found, 20);
+    logf(L"fast travel cost hooked TravelTo at exe+0x%llX", static_cast<unsigned long long>(found - base));
+}
+
+void read_travel() {
+    std::wstring path = g_dir + L"travel.txt";
+    WIN32_FILE_ATTRIBUTE_DATA attr{};
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attr) &&
+        CompareFileTime(&attr.ftLastWriteTime, &g_travel_time) != 0) {
+        FILE* f = _wfopen(path.c_str(), L"rb");
+        if (f) {
+            char buf[128] = {};
+            size_t got = fread(buf, 1, sizeof(buf) - 1, f);
+            fclose(f);
+            std::string text(buf, got);
+            if (text.find("\nend\n") != std::string::npos) {
+                g_travel_time = attr.ftLastWriteTime;
+                size_t at = text.find("food=");
+                if (at != std::string::npos) g_travel_food.store(static_cast<int>(std::strtol(text.c_str() + at + 5, nullptr, 10)));
+                at = text.find("cost=");
+                if (at != std::string::npos) g_travel_cost.store(static_cast<int>(std::strtol(text.c_str() + at + 5, nullptr, 10)));
+            }
+        }
+    }
+    // Trips the player paid for (and refused ones), for travelcost.lua.
+    const int paid = g_travel_paid.load(), refused = g_travel_refused.load();
+    const int sig = paid * 100000 + refused;
+    if (sig != g_travel_written) {
+        g_travel_written = sig;
+        std::wstring out = g_dir + L"travel_paid.txt", tmp = out + L".tmp";
+        FILE* o = _wfopen(tmp.c_str(), L"wb");
+        if (o) {
+            char line[96];
+            int len = snprintf(line, sizeof(line), "paid=%d\nrefused=%d\nend\n", paid, refused);
+            fwrite(line, 1, len, o);
+            fclose(o);
+            MoveFileExW(tmp.c_str(), out.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+    }
+}
+
 // ---- crash report -------------------------------------------------------------------
 // With Modules.diagnostics = 1 (config.lua), a vectored exception handler
 // writes dlls\crash_report.txt the moment a fatal exception happens, before
@@ -1661,6 +1786,9 @@ extern "C" __declspec(dllexport) Mod* start_mod() {
     install_headshots();
     DeleteFileW((g_dir + L"animal_blocked.txt").c_str());  // last session's addresses
     install_animal_blocker();
+    DeleteFileW((g_dir + L"travel.txt").c_str());
+    DeleteFileW((g_dir + L"travel_paid.txt").c_str());
+    install_travel_cost();
     DeleteFileW((g_dir + L"toolbelt.txt").c_str());
     install_toolbelt();
     DeleteFileW((g_dir + L"reverb.txt").c_str());

@@ -155,39 +155,85 @@ local function notify(pc)
     if valid(uim) then call(uim, "CLIENT_ShowBasicTextNotification", notice_value) end
 end
 
------------------------------------------------------------------- hook
-local function on_request(name_param)
-    if CFG.foodPerTrip <= 0 then return end
+------------------------------------------------------------------ native link
+-- The trip itself runs natively (UFastTravelAccessPoint::TravelTo, called by
+-- the map's confirm), so main.dll detours it: this module tells it how much
+-- food you carry (dlls\travel.txt, every 0.5 s); main.dll refuses a trip
+-- you cannot pay for and counts the ones it let through
+-- (dlls\travel_paid.txt). Each new paid trip takes the food here; each
+-- refused one shows the game's notice. (Lua hooks on the confirm and on the
+-- travel request never fired, 2026-10-18.)
+local TRAVEL_FILE = ROOT .. "dlls\\travel.txt"
+local PAID_FILE = ROOT .. "dlls\\travel_paid.txt"
+local last_feed = nil
+local seen_paid, seen_refused = nil, nil
+
+local function write_feed(food)
+    local text = string.format("food=%d\ncost=%d\nend\n", food, CFG.foodPerTrip)
+    if text == last_feed then return end
+    last_feed = text
+    local f = io.open(TRAVEL_FILE .. ".tmp", "wb")
+    if not f then return end
+    f:write(text)
+    f:close()
+    os.remove(TRAVEL_FILE)
+    os.rename(TRAVEL_FILE .. ".tmp", TRAVEL_FILE)
+end
+
+local function read_paid()
+    local f = io.open(PAID_FILE, "r")
+    if not f then return nil end
+    local text = f:read("*a")
+    f:close()
+    if not text:find("\nend\n", 1, true) then return nil end
+    return tonumber(text:match("paid=(%d+)")), tonumber(text:match("refused=(%d+)"))
+end
+
+local function pay(pawn)
+    local stacks = food_stacks(pawn)
+    local left = CFG.foodPerTrip
+    for _, f in ipairs(stacks) do
+        while left > 0 and f.amount > 0 do
+            take_one(f)
+            f.amount = f.amount - 1
+            left = left - 1
+            log(string.format("fast travel paid with 1 %s (slot %d)", f.name, f.slot + 1))
+        end
+        if left == 0 then break end
+    end
+    if left > 0 then log("fast travel: could only take part of the cost") end
+end
+
+local feed_tick = 0
+local function pass()
+    if CFG.foodPerTrip <= 0 then write_feed(0) return end
     local pc, pawn = player_parts()
     if not pc then return end
-    local stacks = food_stacks(pawn)
-    local have = 0
-    for _, f in ipairs(stacks) do have = have + f.amount end
-    if have >= CFG.foodPerTrip then
-        local left = CFG.foodPerTrip
-        for _, f in ipairs(stacks) do
-            while left > 0 and f.amount > 0 do
-                take_one(f)
-                f.amount = f.amount - 1
-                left = left - 1
-                log(string.format("fast travel paid with 1 %s (slot %d)", f.name, f.slot + 1))
-            end
-            if left == 0 then break end
+    feed_tick = feed_tick + 1
+    if feed_tick % 2 == 1 then
+        local have = 0
+        for _, f in ipairs(food_stacks(pawn)) do have = have + f.amount end
+        write_feed(have)
+    end
+    local paid, refused = read_paid()
+    if paid then
+        if seen_paid and paid > seen_paid then
+            for _ = 1, paid - seen_paid do pay(pawn) end
+            last_feed = nil              -- food changed: send the new count
         end
-    else
-        -- Not enough food: blank the destination so the request finds nothing.
-        try(function() name_param:set(FText("")) end)
-        log("fast travel cancelled: no food on you")
-        notify(pc)
+        seen_paid = paid
+    end
+    if refused then
+        if seen_refused and refused > seen_refused then
+            log("fast travel cancelled: not enough food on you")
+            notify(pc)
+        end
+        seen_refused = refused
     end
 end
 
-local ok = try(function()
-    RegisterHook("/Script/Permafrost.PermaPlayerController:Server_HandleFastTravelRequest", function(self, name_param)
-        local okc, err = pcall(on_request, name_param)
-        if not okc then log("error: " .. tostring(err)) end
-    end)
-    return true
+LIB.game_loop(250, function()
+    local ok, err = pcall(pass)
+    if not ok then log("error: " .. tostring(err)) end
 end)
-log(ok and string.format("loaded: fast travel costs %d food (hotbar first)", CFG.foodPerTrip)
-    or "FAILED to hook Server_HandleFastTravelRequest")
+log(string.format("loaded: fast travel costs %d food (hotbar from the highest slot first)", CFG.foodPerTrip))
