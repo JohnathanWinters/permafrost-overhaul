@@ -130,10 +130,24 @@ local function log_part(actor)
 end
 
 local settle = os.clock() + 15
+local scanned = false
 game_loop(1000, function()
     if os.clock() < settle then return end
     local ok, err = pcall(function()
         log_manager()
+        -- Parts loaded from the save BeginPlay before this module watches:
+        -- list the existing ones once (the first run logged none).
+        if not scanned then
+            scanned = true
+            local n = 0
+            for _, a in ipairs(try(function() return FindAllOf("BuildPartBase") end) or {}) do
+                if valid(a) and not fname(a):find("^Default__") and #queue < 400 then
+                    queue[#queue + 1] = LIB.path_of(a)
+                    n = n + 1
+                end
+            end
+            log(string.format("built parts in the world: %d", n))
+        end
         if mat_count >= CFG.maxMaterials then queue = {} return end
         local list = queue
         queue = {}

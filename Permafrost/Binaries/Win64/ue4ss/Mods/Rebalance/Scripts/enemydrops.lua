@@ -183,7 +183,16 @@ local function give_gun(npc)
         if gun_logged <= 5 then log("gun drop: no weapon found on " .. fname(npc)) end
         return
     end
-    local sp = raw or soft_ref(name)     -- the enemy's own reference first: no load
+    -- Scripted enemies carry prop guns ("NoDamage"): never dropped.
+    if name:find("NoDamage", 1, true) then
+        if gun_logged <= 10 then log("gun drop: skipped prop gun " .. name) end
+        return
+    end
+    local sp = raw or soft_ref(name)     -- the enemy's own reference first; never loads from disk
+    if sp == nil then
+        if gun_logged <= 10 then log("gun drop: no loaded reference for " .. name .. "; skipped") end
+        return
+    end
     local have = try(function() return inv:GetItemQuantity(sp) end)
     if tonumber(have) and have > 0 then return end
     local added = try(function() return inv:AddItemAmount({ Item = sp, Amount = 1 }, false, false) end)

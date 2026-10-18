@@ -139,8 +139,10 @@ local function soft_from(src, obj, name)
 end
 
 -- A soft pointer to the item, read now from a loaded loot table; use it
--- right away. Loads a table (a small hitch) only when none is loaded.
-function M.soft_ref(name)
+-- right away. Loads a table from disk only when allow_load is true and none
+-- is loaded: a load in the middle of a fight preceded a crash while copying
+-- the reference (enemy gun drop, 2026-10-18 13:44).
+function M.soft_ref(name, allow_load)
     local e = name and item_soft[name]
     if not e then return nil end
     for _, src in ipairs(e.sources) do
@@ -155,6 +157,7 @@ function M.soft_ref(name)
             if it then return it end
         end
     end
+    if not allow_load then return nil end
     local src = e.sources[1]
     local obj = src and try(function() return LoadAsset(src.path) end)
     return valid(obj) and soft_from(src, obj, name) or nil

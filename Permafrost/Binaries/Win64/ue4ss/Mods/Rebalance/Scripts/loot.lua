@@ -65,7 +65,7 @@ local function apply_entry(kind, tname, i, s, e)
     local item_ok = true
     if e.newItem and e.newItem ~= e.item then
         changed = true
-        local src = DATA.soft_ref(e.newItem)
+        local src = DATA.soft_ref(e.newItem, true)
         local now = short(soft_path(try(function() return s.Item end)))
         if now ~= e.newItem then
             item_ok = src ~= nil and try(function() s.Item = src; return true end) == true

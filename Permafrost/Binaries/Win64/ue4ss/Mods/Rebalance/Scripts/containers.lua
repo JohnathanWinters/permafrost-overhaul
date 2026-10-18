@@ -74,7 +74,7 @@ end
 local missing_logged = {}
 local function add_item(inv, item, amount)
     if amount <= 0 then return false end
-    local sp = soft_ref(item)
+    local sp = soft_ref(item, true)
     if not sp then
         if not missing_logged[item] then missing_logged[item] = true log("no item reference for " .. tostring(item)) end
         return false

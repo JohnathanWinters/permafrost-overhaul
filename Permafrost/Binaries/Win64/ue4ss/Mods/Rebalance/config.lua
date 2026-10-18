@@ -27,6 +27,7 @@ return {
         food                       = 1     , -- Scripts/food.lua             food and drinks do not heal
         hud                        = 1     , -- Scripts/hud.lua              HUD parts fade out until needed
         buildsnow                  = 1     , -- Scripts/buildsnow.lua        snow on player-built structures (now: discovery only, logs, changes nothing)
+        warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
     },

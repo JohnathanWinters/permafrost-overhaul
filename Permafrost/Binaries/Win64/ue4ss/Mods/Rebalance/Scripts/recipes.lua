@@ -108,7 +108,7 @@ local function fix_heater_recipe(chem)
     local DATA = REBALANCE_SHARED("lootdata")
     DATA.start()
     for _, n in ipairs(NEEDED) do
-        if not refs[n[2]] then refs[n[2]] = DATA.soft_ref(n[2]) end
+        if not refs[n[2]] then refs[n[2]] = DATA.soft_ref(n[2], true) end
     end
     local missing = {}
     for _, n in ipairs(NEEDED) do
@@ -163,7 +163,7 @@ local function fix_heater_repair(chem)
     local function fields(val)
         local st = try(function() return val:get() end) or val
         local parts = {}
-        for _, f in ipairs({ "Amount", "Value", "Count", "Quantity", "Min", "Max", "LowerBound", "UpperBound" }) do
+        for _, f in ipairs({ "X", "Y", "Amount", "Value", "Count", "Quantity", "Min", "Max" }) do
             local x = try(function() return st[f] end)
             if type(x) == "number" then parts[#parts + 1] = f .. "=" .. x end
         end
@@ -185,10 +185,10 @@ local function fix_heater_repair(chem)
     if type(st) == "number" then
         set_ok = try(function() chem_entry.val:set(CFG.heaterRepairChemicals); return true end) == true
     else
-        for _, f in ipairs({ "Amount", "Value", "Count", "Quantity" }) do
+        -- The value is an FIntPoint (X, Y: amount range, 2026-10-18); set both.
+        for _, f in ipairs({ "X", "Y", "Amount", "Value", "Count", "Quantity" }) do
             if type(try(function() return st[f] end)) == "number" then
-                set_ok = try(function() st[f] = CFG.heaterRepairChemicals; return true end) == true
-                if set_ok then break end
+                if try(function() st[f] = CFG.heaterRepairChemicals; return true end) == true then set_ok = true end
             end
         end
     end
