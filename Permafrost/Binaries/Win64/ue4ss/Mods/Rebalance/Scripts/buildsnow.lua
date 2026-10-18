@@ -23,6 +23,8 @@ local DEFAULTS = {
     { "coverage", 0.9, "snow coverage on built parts (0 = none, vanilla)" },
     { "falloffOffset", 0.2, "how far the snow reaches down the sides" },
     { "maskCutoff", 0.05, "snow mask cutoff" },
+    { "shelterMetres", 30, "a part with anything above it within this distance (a roof) gets no snow (0 = no check)" },
+    { "swapMaterial", 1, "1 = rebuild each part's material on the game's snowy wood material (needed for snow to show)" },
 }
 local function load_config()
     local cfg = {}
@@ -42,6 +44,7 @@ local function load_config()
     return cfg
 end
 local CFG = load_config()
+CFG.swapMaterial = CFG.swapMaterial ~= 0
 
 local PARAMS = {
     { "Coverage (Snow)", CFG.coverage },
@@ -83,16 +86,165 @@ local function part_meshes(actor)
     return out
 end
 
-local stats = { parts = 0, mats = 0, skipped = 0 }
-local verified = false
+------------------------------------------------------------------ snow material
+-- Setting the coverage alone showed no snow (2026-10-18): the build-part
+-- material (MMI_BuildPart_VT) most likely has the snow layer switched off
+-- by a static switch, which cannot change at runtime. MI_FV_Wood (the
+-- game's snowy wood, same master MM_Opaque_VT) has it on. So each part's
+-- material is replaced by a new dynamic material on MI_FV_Wood with the
+-- part's own textures, colours and numbers copied over (same master, so
+-- the parameter names match): the part keeps its look and gets snow.
+local SNOW_PARENT = "MI_FV_Wood"
+local snow_parent_path, parent_looked = nil, false
+local function find_snow_parent()
+    if snow_parent_path then
+        local m = LIB.resolve(snow_parent_path)
+        if m then return m end
+    end
+    if parent_looked then return nil end
+    parent_looked = true
+    for _, m in ipairs(try(function() return FindAllOf("MaterialInstanceConstant") end) or {}) do
+        if valid(m) and fname(m) == SNOW_PARENT then
+            snow_parent_path = LIB.path_of(m)
+            log("snow material found: " .. tostring(snow_parent_path))
+            return m
+        end
+    end
+    log("snow material " .. SNOW_PARENT .. " not loaded: falling back to coverage only")
+    return nil
+end
+
+-- Parameters set on a material and its parents (closest wins).
+local function collect(mat)
+    local out = { scalar = {}, vector = {}, texture = {}, order = {} }
+    local m = mat
+    for _ = 1, 6 do
+        for _, kind in ipairs({ { "scalar", "ScalarParameterValues" }, { "vector", "VectorParameterValues" },
+                                { "texture", "TextureParameterValues" } }) do
+            try(function()
+                m[kind[2]]:ForEach(function(_, e)
+                    local s = e:get()
+                    local n = try(function() return s.ParameterInfo.Name:ToString() end)
+                    if n and out[kind[1]][n] == nil then
+                        local v = try(function() return s.ParameterValue end)
+                        if v ~= nil then
+                            if kind[1] == "vector" then
+                                v = { R = v.R, G = v.G, B = v.B, A = v.A }
+                            end
+                            out[kind[1]][n] = v
+                            out.order[#out.order + 1] = { kind[1], n }
+                        end
+                    end
+                end)
+            end)
+        end
+        local p = get(m, "Parent")
+        if not valid(p) then break end
+        m = p
+    end
+    return out
+end
+
+-- Logs a material's static switches (UE5 keeps them in StaticParametersRuntime).
+local function switches(mat)
+    local out, m = {}, mat
+    for _ = 1, 6 do
+        for _, field in ipairs({ "StaticParametersRuntime", "StaticParameters" }) do
+            try(function()
+                m[field].StaticSwitchParameters:ForEach(function(_, e)
+                    local s = e:get()
+                    local n = try(function() return s.ParameterInfo.Name:ToString() end) or "?"
+                    out[#out + 1] = string.format("%s:%s=%s", fname(m), n, tostring(try(function() return s.Value end)))
+                end)
+            end)
+        end
+        local p = get(m, "Parent")
+        if not valid(p) then break end
+        m = p
+    end
+    return #out > 0 and table.concat(out, ", ") or "none readable"
+end
+
+local stats = { parts = 0, mats = 0, swapped = 0, skipped = 0, sheltered = 0 }
+local verified, described = false, false
+local function snow_material(c, i, old, parent)
+    if not CFG.swapMaterial or not parent then return old end
+    local src = collect(old)
+    local new = call(c, "CreateDynamicMaterialInstance", i, parent, FName("None"))
+    if not valid(new) then return old end
+    for _, o in ipairs(src.order) do
+        local kind, n = o[1], o[2]
+        local v = src[kind][n]
+        if kind == "scalar" then call(new, "SetScalarParameterValue", FName(n), v)
+        elseif kind == "vector" then call(new, "SetVectorParameterValue", FName(n), v)
+        elseif kind == "texture" and valid(v) then call(new, "SetTextureParameterValue", FName(n), v) end
+    end
+    stats.swapped = stats.swapped + 1
+    if not described then
+        described = true
+        local tex = {}
+        for n, v in pairs(src.texture) do tex[#tex + 1] = n .. "=" .. (valid(v) and fname(v) or "?") end
+        log("part material switches: " .. switches(old))
+        log("snow material switches: " .. switches(parent))
+        log("copied textures: " .. table.concat(tex, ", "))
+    end
+    return new
+end
+
+-- Only parts open to the sky get snow (user 2026-10-18: snow showed on the
+-- repair bench inside the building). A trace goes straight up from just
+-- above the part's top, at its centre; anything within shelterMetres
+-- (a roof, a ceiling, another storey) means sheltered.
+local helpers_cache = nil
+local trace_warned, shelter_logged = false, 0
+local function sheltered(actor)
+    local limit = (tonumber(CFG.shelterMetres) or 0) * 100
+    if limit <= 0 then return false end
+    helpers_cache = helpers_cache or try(function() return require("UEHelpers") end)
+    local ksl = helpers_cache and try(function() return helpers_cache.GetKismetSystemLibrary() end)
+    if not ksl then return false end
+    local origin, extent = {}, {}
+    try(function() actor:GetActorBounds(true, origin, extent, false) end)
+    local x, y = tonumber(origin.X), tonumber(origin.Y)
+    local top = tonumber(origin.Z) and tonumber(extent.Z) and (origin.Z + extent.Z)
+    if not (x and y and top) then
+        local p = call(actor, "K2_GetActorLocation")
+        if not p then return false end
+        x, y, top = p.X, p.Y, p.Z + 50
+    end
+    local hit = {}
+    local blocked = try(function()
+        return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = top + 15 }, { X = x, Y = y, Z = top + 15 + limit },
+            0, false, {}, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
+    end)
+    if blocked == nil and not trace_warned then
+        trace_warned = true
+        log("roof check: the trace failed, parts are treated as open to the sky")
+    end
+    if blocked == true and shelter_logged < 3 then
+        shelter_logged = shelter_logged + 1
+        local o = hit.HitObjectHandle and try(function() return hit.HitObjectHandle.Actor:Get() end)
+        log(string.format("roof check: %s is under %s", fname(actor), o and valid(o) and fname(o) or "something"))
+    end
+    return blocked == true
+end
+
 local function snow_part(actor)
+    if sheltered(actor) then
+        stats.sheltered = stats.sheltered + 1
+        stats.parts = stats.parts + 1
+        return
+    end
+    local parent = CFG.swapMaterial and find_snow_parent() or nil
     for _, c in ipairs(part_meshes(actor)) do
+        local cname = fname(c) or ""
         local n = tonumber(call(c, "GetNumMaterials")) or 0
         for i = 0, n - 1 do
             local mat = call(c, "GetMaterial", i)
-            if valid(mat) then
+            if valid(mat) and not cname:find("^Arrow") then
                 local cn = fname(call(mat, "GetClass")) or ""
                 if cn == "MaterialInstanceDynamic" then
+                    mat = snow_material(c, i, mat, parent)
                     for _, p in ipairs(PARAMS) do
                         call(mat, "SetScalarParameterValue", FName(p[1]), p[2])
                     end
@@ -152,8 +304,8 @@ game_loop(1000, function()
         end
         if #queue == 0 and stats.parts ~= reported then
             reported = stats.parts
-            log(string.format("snow on %d built parts (%d materials set, %d shared materials left alone)",
-                stats.parts, stats.mats, stats.skipped))
+            log(string.format("snow on %d of %d built parts (%d under a roof skipped; %d materials set, %d rebuilt on the snow material, %d shared left alone)",
+                stats.parts - stats.sheltered, stats.parts, stats.sheltered, stats.mats, stats.swapped, stats.skipped))
         end
     end)
     if not ok then log("error: " .. tostring(err)) end

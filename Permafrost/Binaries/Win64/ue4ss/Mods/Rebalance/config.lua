@@ -198,6 +198,8 @@ return {
         coverage                     = 0.9   , -- vanilla 0     snow coverage on built parts (0 = off)
         falloffOffset                = 0.2   , -- vanilla -     how far the snow reaches down the sides
         maskCutoff                   = 0.05  , -- vanilla -     snow mask cutoff
+        shelterMetres                = 30    , -- vanilla -     a part with a roof (anything) above it within this distance gets no snow
+        swapMaterial                 = 1     , -- vanilla 0     1 = rebuild part materials on the game's snowy wood material (needed for snow to show)
     },
 
     -- TRAVEL COST: What fast travel costs. Food comes from the hotbar first (highest slot first), then the inventory.
