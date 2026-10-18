@@ -206,7 +206,7 @@ return {
     -- BED TRAVEL: Your beds show on the map as fast travel points (the buildable travel lamp still works too).
     BedTravel = {
         sleepingBags                 = 0     , -- vanilla -     1 = sleeping bags count as beds too
-        travelKey                    = "X"   , -- vanilla -     key that opens fast travel while you look at a bed
+        travelKey                    = "X"   , -- vanilla -     key that opens fast travel while you look at a bed: any letter "A".."Z", or a name like "F5", "TAB", "CAPS_LOCK"
         reachMetres                  = 3     , -- vanilla -     how close the bed must be
     },
 

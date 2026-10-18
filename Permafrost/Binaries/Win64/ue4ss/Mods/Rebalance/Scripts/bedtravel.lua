@@ -303,7 +303,15 @@ local save_hooked = try(function()
 end)
 
 ------------------------------------------------------------------ loops
-local key = Key[CFG.travelKey] or Key.X
+-- Any UE4SS key name: letters "A".."Z", "F5", "TAB", "CAPS_LOCK" and so on
+-- (case does not matter). An unknown name falls back to X, with a log line.
+local key_name = tostring(CFG.travelKey):upper()
+local key = Key[key_name]
+if not key then
+    log("unknown travelKey '" .. tostring(CFG.travelKey) .. "', using X")
+    key_name, key = "X", Key.X
+end
+CFG.travelKey = key_name
 RegisterKeyBind(key, function()
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
