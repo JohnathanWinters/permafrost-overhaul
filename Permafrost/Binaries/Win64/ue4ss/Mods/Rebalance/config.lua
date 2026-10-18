@@ -29,6 +29,7 @@ return {
         buildsnow                  = 1     , -- Scripts/buildsnow.lua        snow on player-built structures (now: discovery only, logs, changes nothing)
         warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
         weather                    = 1     , -- Scripts/weather.lua          storms and snowfall come more often
+        bedtravel                  = 1     , -- Scripts/bedtravel.lua        fast travel on the map to your beds (experimental)
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
     },
