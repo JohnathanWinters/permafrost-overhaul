@@ -385,9 +385,11 @@ game_loop(10000, function()
     if left > 0 then pcall(spread_defaults) end
 end)
 local block_candidates = {}   -- spawner paths for the blocker's calibration (section 6)
+local exempt_pending = {}     -- spawner paths still to classify for the blocker (section 6)
 REBALANCE_ON_ACTOR("/Script/Permafrost.Spawner_BaseType", function(obj)
     local p = path_of(obj)
     spread_pending[#spread_pending + 1] = p
+    exempt_pending[#exempt_pending + 1] = { p, os.clock() + 1 }
     if #block_candidates < 20 then block_candidates[#block_candidates + 1] = p end
 end)
 
@@ -456,6 +458,71 @@ end)
 -- component and location, so no game offsets are hardcoded.
 local BLOCK_FILE = (mod_root() or "") .. "dlls\\spawnblock.txt"
 local block_helpers = nil
+
+-- Story spawners are never blocked: Finn never appeared on his tower because
+-- the player stood within 100 m of his spawner (2026-10-18). A spawner is
+-- left alone when it has narrative Conditions, a quest-like name, or spawns
+-- anyone who is not a generic hostile. Their addresses go to the DLL as
+-- allow=<addr>,<addr>,...
+local HOSTILE = { "RifleMan", "MoonCult", "Combatant", "Militant", "Cultist", "Bandit", "Hostile", "Background" }
+local function generic_hostile(n)
+    for _, h in ipairs(HOSTILE) do if n:find(h, 1, true) then return true end end
+    return false
+end
+local exempt = {}             -- spawner path -> address
+local exempt_logged = 0
+local function exempt_reason(sp)
+    local name = fname(sp)
+    for _, w in ipairs({ "Quest", "Story", "Narrative", "Mission", "Unique" }) do
+        if name:find(w, 1, true) then return "name " .. name end
+    end
+    local conds = try(function() return sp.Conditions end)
+    local nc = conds and tonumber(try(function() return conds:GetArrayNum() end)) or 0
+    if nc > 0 then return string.format("%d narrative conditions", nc) end
+    local who = nil
+    try(function()
+        sp.CharactersAndAmount:ForEach(function(k)
+            if who then return end
+            local c = k:get()
+            local n = valid(c) and fname(c) or tostring(try(function() return c:ToString() end) or "")
+            if n ~= "" and n ~= "None" and not generic_hostile(n) then who = n end
+        end)
+    end)
+    if who then return "spawns " .. who end
+    return nil
+end
+game_loop(500, function()
+    if #exempt_pending == 0 then return end
+    local now, keep = os.clock(), {}
+    local list = exempt_pending
+    exempt_pending = {}
+    for _, e in ipairs(list) do
+        if now < e[2] then
+            keep[#keep + 1] = e
+        else
+            local sp = resolve(e[1])
+            local ok, why = pcall(exempt_reason, sp)
+            if sp and ok and why then
+                exempt[e[1]] = address(sp)
+                if exempt_logged < 30 then
+                    exempt_logged = exempt_logged + 1
+                    log(string.format("spawn blocker leaves %s alone (%s)", fname(sp), why))
+                end
+            end
+        end
+    end
+    for _, e in ipairs(exempt_pending) do keep[#keep + 1] = e end
+    exempt_pending = keep
+end)
+local function allow_line()
+    local list = {}
+    for p, a in pairs(exempt) do
+        if a and resolve(p) then list[#list + 1] = string.format("%X", a) else exempt[p] = nil end
+        if #list >= 200 then break end
+    end
+    table.sort(list)
+    return #list > 0 and ("allow=" .. table.concat(list, ",")) or nil
+end
 local cal_line = nil
 local last_block_text = nil
 local function calibration()
@@ -489,6 +556,8 @@ local function write_block()
     end
     local cal = calibration()
     if cal then lines[#lines + 1] = cal end
+    local allow = allow_line()
+    if allow then lines[#lines + 1] = allow end
     local text = table.concat(lines, "\n") .. "\nend\n"
     if text == last_block_text then return end
     last_block_text = text

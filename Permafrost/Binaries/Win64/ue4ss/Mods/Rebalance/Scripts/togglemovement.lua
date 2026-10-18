@@ -85,7 +85,7 @@ local CFG = load_config()
 for _, d in ipairs(DEFAULTS) do log(d[1] .. " = " .. tostring(CFG[d[1]])) end
 
 -- Two budgets: raw hook calls (noisy) and state changes the poll makes.
-local debug_left, hook_left = 150, 20
+local debug_left, hook_left = 150, 60
 local function dbg(msg)
     if CFG.debugLog == 1 and debug_left > 0 then
         debug_left = debug_left - 1
@@ -186,7 +186,7 @@ end
 
 ------------------------------------------------------------------ sprint
 local sprint = { on = false, stopped_ms = 0 }
-local wants_sprint  -- defined with the poll below
+local wants_sprint, is_sprinting  -- defined with the poll below
 
 local function on_sprint_pre(char, value)
     if CFG.toggleSprint ~= 1 then return end
@@ -202,13 +202,17 @@ local function on_sprint_pre(char, value)
         -- Flip from what the character really does: when the game had
         -- already ended the sprint (weapon swap, stamina) a tap used to
         -- "turn off" a sprint that was not running (2026-10-18).
-        sprint.on = not (sprint.on and wants_sprint(char))
+        -- The real gait, not DesiredGait: the game kept asking for a sprint it
+        -- was not running (tired, aiming), so a tap "turned off" a sprint you
+        -- could not see and the next tap was needed (log 2026-10-18 18:58).
+        sprint.on = not (sprint.on and is_sprinting(char))
         sprint.force_until = os.clock() + 0.6
         sprint.lost_ms = 0
     end
     sprint.stopped_ms = 0
     try(function() value:set(sprint.on) end)
-    dbg_hook(string.format("SprintAction raw=%s -> %s", tostring(raw), tostring(sprint.on)))
+    dbg_hook(string.format("SprintAction raw=%s -> %s (gait %s, desired %s)", tostring(raw), tostring(sprint.on),
+        tostring(get(char, "Gait")), tostring(get(char, "DesiredGait"))))
 end
 
 ------------------------------------------------------------------ hooks
@@ -310,6 +314,12 @@ local GAIT_SPRINT = 2
 function wants_sprint(char)
     local g = tonumber(get(char, "DesiredGait"))
     if g == nil then return sprint.on end
+    return g == GAIT_SPRINT
+end
+-- The gait the character is really in (what you see on screen).
+function is_sprinting(char)
+    local g = tonumber(get(char, "Gait"))
+    if g == nil then return wants_sprint(char) end
     return g == GAIT_SPRINT
 end
 

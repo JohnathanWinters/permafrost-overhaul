@@ -561,11 +561,27 @@ std::atomic<bool> g_player_known{false};
 std::atomic<int> g_root_off{-1}, g_loc_off{-1};
 std::atomic<int> g_blocked{0}, g_allowed{0};
 FILETIME g_block_time{};
+// Story spawners (quest NPCs like Finn) Lua says to leave alone: allow= line.
+SRWLOCK g_exempt_lock = SRWLOCK_INIT;
+std::unordered_set<uintptr_t> g_exempt;
+std::atomic<int> g_exempt_used{0};
+
+bool spawn_exempt(void* sp) {
+    AcquireSRWLockShared(&g_exempt_lock);
+    const bool hit = g_exempt.count(reinterpret_cast<uintptr_t>(sp)) != 0;
+    ReleaseSRWLockShared(&g_exempt_lock);
+    return hit;
+}
 
 bool spawn_check_detour(void* sp) {
     InHook in_hook(t_in_spawn);
     const long long cm = g_block_cm.load(std::memory_order_relaxed);
     const int ro = g_root_off.load(std::memory_order_acquire), lo = g_loc_off.load(std::memory_order_acquire);
+    if (sp && cm > 0 && spawn_exempt(sp)) {
+        int n = g_exempt_used.fetch_add(1) + 1;
+        if (n <= 10) logf(L"spawn not blocked #%d: story spawner", n);
+        return g_spawn_tramp(sp);
+    }
     if (sp && cm > 0 && ro >= 0 && lo >= 0 && g_player_known.load(std::memory_order_acquire)) {
         void* root = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(sp) + ro);
         if (root) {
@@ -692,11 +708,12 @@ void read_spawnblock() {
     HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (f == INVALID_HANDLE_VALUE) return;
-    char buf[1024] = {};
+    static char buf[8192];  // allow= holds up to 200 addresses
     DWORD got = 0;
     ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr);
     CloseHandle(f);
     std::string text(buf, got);
+    std::unordered_set<uintptr_t> exempt;
     if (text.find("\nend\n") == std::string::npos) return;
     g_block_time = attr.ftLastWriteTime;
     size_t pos = 0;
@@ -719,8 +736,22 @@ void read_spawnblock() {
             unsigned long long a = 0, r = 0;
             double x = 0, y = 0, z = 0;
             if (sscanf(line.c_str() + 4, "%llX,%llX,%lf,%lf,%lf", &a, &r, &x, &y, &z) == 5) calibrate(a, r, x, y, z);
+        } else if (line.rfind("allow=", 0) == 0) {
+            const char* s = line.c_str() + 6;
+            while (*s) {
+                char* end = nullptr;
+                unsigned long long a = std::strtoull(s, &end, 16);
+                if (end == s) break;
+                if (a) exempt.insert(static_cast<uintptr_t>(a));
+                s = (*end == ',') ? end + 1 : end;
+            }
         }
     }
+    const size_t before = g_exempt.size();  // only this thread writes the set
+    AcquireSRWLockExclusive(&g_exempt_lock);
+    g_exempt.swap(exempt);
+    ReleaseSRWLockExclusive(&g_exempt_lock);
+    if (g_exempt.size() != before) logf(L"spawn blocker: %zu story spawners left alone", g_exempt.size());
 }
 
 // ---- headshots ----------------------------------------------------------------------
