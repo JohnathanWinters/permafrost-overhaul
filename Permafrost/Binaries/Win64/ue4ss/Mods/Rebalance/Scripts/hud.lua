@@ -256,12 +256,42 @@ local function lowest_stat(w, depth, best)
     return best
 end
 
-local function menu_open(hud)
-    for _, e in ipairs(routes.menu) do
-        local w = follow(hud, e.route)
-        if w and call(w, "IsVisible") == true then return true end
+-- A menu is open when the game shows the mouse cursor. (The ledger menu
+-- widget reports itself visible even when closed, which kept the whole HUD
+-- shown, 2026-10-18.)
+local function menu_open(pc)
+    return pc ~= nil and get(pc, "bShowMouseCursor") == true
+end
+
+-- Once: what surrounds the stat panel (its parents through GetParent, and
+-- the top one's children), to find the toolbelt widget. Written to
+-- dlls\hud_panels.txt. Only parents and children are followed, never owners.
+local panels_dumped = false
+local function dump_panels()
+    if panels_dumped or CFG.debugLog ~= 1 then return end
+    local list = panels("health")
+    if #list == 0 then return end
+    panels_dumped = true
+    local lines = {}
+    for n, w in ipairs(list) do
+        local top, chain = w, { fname(w) }
+        for _ = 1, 8 do
+            local p = call(top, "GetParent")
+            if not valid(p) then break end
+            top = p
+            chain[#chain + 1] = fname(p) .. " (" .. cls_name(p) .. ")"
+        end
+        lines[#lines + 1] = string.format("== status panel %d, parents: %s", n, table.concat(chain, " < "))
+        local function rec(x, depth)
+            if depth > 7 or #lines > 400 then return end
+            lines[#lines + 1] = string.rep("  ", depth) .. fname(x) .. " (" .. cls_name(x) .. ")"
+            each_child(x, function(c) rec(c, depth + 1) end)
+        end
+        rec(top, 0)
     end
-    return false
+    local f = io.open(ROOT .. "dlls\\hud_panels.txt", "w")
+    if f then f:write(table.concat(lines, "\n") .. "\n") f:close() end
+    log("stat panel surroundings written to dlls\\hud_panels.txt")
 end
 
 ------------------------------------------------------------------ rules
@@ -341,7 +371,7 @@ local function decide(hud)
         targets.weapon = (addr and now < weapon_until) and 1 or 0
     end
     -- Inventory open: everything shown (the toolbelt slots appear there too).
-    if menu_open(hud) then
+    if menu_open(pc) then
         for k in pairs(targets) do targets[k] = 1 end
         return
     end
@@ -413,6 +443,7 @@ game_loop(STEP_MS, function()
             scan_at = now + 3
         end
         if not odd then decide(hud) end
+        pcall(dump_panels)
         fade(hud)
     end)
     if not ok and errors < 10 then errors = errors + 1 log("error: " .. tostring(err)) end
