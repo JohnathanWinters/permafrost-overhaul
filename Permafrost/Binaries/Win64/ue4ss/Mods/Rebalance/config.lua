@@ -30,6 +30,7 @@ return {
         warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
         weather                    = 1     , -- Scripts/weather.lua          storms and snowfall come more often
         travelcost                 = 1     , -- Scripts/travelcost.lua       fast travel costs food (hotbar first)
+        bedtravel                  = 1     , -- Scripts/bedtravel.lua        fast travel on the map to your beds
         doors                      = 1     , -- Scripts/doors.lua            doors and shutters keep their state across saves (now: discovery only)
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
@@ -200,6 +201,11 @@ return {
         maskCutoff                   = 0.05  , -- vanilla -     snow mask cutoff
         shelterMetres                = 30    , -- vanilla -     a part with a roof (anything) above it within this distance gets no snow
         swapMaterial                 = 1     , -- vanilla 0     1 = rebuild part materials on the game's snowy wood material (needed for snow to show)
+    },
+
+    -- BED TRAVEL: Your beds show on the map as fast travel points (the buildable travel lamp still works too).
+    BedTravel = {
+        sleepingBags                 = 0     , -- vanilla -     1 = sleeping bags count as beds too
     },
 
     -- TRAVEL COST: What fast travel costs. Food comes from the hotbar first (highest slot first), then the inventory.

@@ -119,6 +119,9 @@ Only containers you have not opened yet change. A container that is still locked
 ### weather
 - Snowfall is 3x as likely and blizzards 1.75x, with shorter waits between them. Snowfall stays more common than blizzards.
 
+### bedtravel
+- Your beds show on the world map as fast travel points. The buildable travel lamp still works for everywhere else.
+
 ### travelcost
 - Fast travel costs 1 food or drink, taken from the hotbar first (highest slot first), then the inventory. With none on you, the trip is refused.
 

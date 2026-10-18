@@ -354,7 +354,7 @@ end
 
 local ORDER = { "loot", "containers", "locks", "enemydrops", "encounters", "spawndistance", "patrols", "humanai",
                 "harderhunting", "betterguns", "flashlight", "togglemovement", "eternaltorches", "craftfromstorage",
-                "survivaltweaks", "toolbelt", "accuracy", "recipes", "food", "hud", "buildsnow", "warmth", "weather", "travelcost", "doors", "f8log" }
+                "survivaltweaks", "toolbelt", "accuracy", "recipes", "food", "hud", "buildsnow", "warmth", "weather", "travelcost", "bedtravel", "doors", "f8log" }
 
 -- Internal file per module, built from these config.lua sections (later
 -- sections win on a shared key).
@@ -380,6 +380,7 @@ local SPLIT = {
     { file = "config\\Weather.lua",        sections = { "Weather" } },
     { file = "config\\TravelCost.lua",     sections = { "TravelCost" } },
     { file = "config\\BuildSnow.lua",      sections = { "BuildSnow" } },
+    { file = "config\\BedTravel.lua",      sections = { "BedTravel" } },
     { file = "config\\Containers.lua",       list = "Containers" },
 }
 
