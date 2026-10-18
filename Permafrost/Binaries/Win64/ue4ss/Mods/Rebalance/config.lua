@@ -123,7 +123,6 @@ return {
         cameraKickMultiplier       = 2.5   , -- vanilla 1.0   camera shake per shot
     },
 
-    -- SURVIVAL: How fast you lose stats. 1.0 = vanilla, 0.5 = half, 2.0 = double. Range 0 to 2.
     -- HUMAN AI: Hostile humans in a fight.
     HumanAI = {
         flinch                       = 0     , -- vanilla 1     0 = hostile humans never flinch when hit, 1 = flinch with the cooldown below
@@ -173,6 +172,7 @@ return {
         debugLog                     = 1     , -- vanilla -     1 = log the HUD parts found (dlls\hud_tree.txt)
     },
 
+    -- SURVIVAL: How fast you lose your own stats. Gains and healing stay vanilla. 1.0 = vanilla, 0.5 = half, 2.0 = double.
     Survival = {
         staminaDrainMultiplier     = 1.2   , -- vanilla 1.0   stamina use
         hungerDrainMultiplier      = 0.2   , -- vanilla 1.0   hunger

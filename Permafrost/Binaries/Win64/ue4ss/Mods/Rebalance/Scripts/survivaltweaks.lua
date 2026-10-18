@@ -1,137 +1,100 @@
--- SurvivalTweaks module of the Rebalance mod (was its own mod until 2026-10-17).
--- Settings: Rebalance\survivaltweaks\config.lua (read by the hosted DLL).
--- SurvivalTweaks: local PlayerController(0) -> actual pawn -> GAS ASC.
--- This is a fail-closed identity witness, NOT a gameplay mod.
--- A client with no validated LOCAL controller/ASC writes ASC=0.
-local TAG = "[PF GAS Player0] "
+-- SurvivalTweaks module of the Overhaul. How fast your own stats drop:
+-- stamina, hunger, energy, health damage and body warmth. Only your losses
+-- change; gains, healing and other characters stay vanilla.
+-- The scaling itself is native (main.cpp, "survival rates"): this module
+-- tells it, once a second, which ability system component is yours, one
+-- live object of each attribute set (Stamina, Health, Temperature; their
+-- vtables get hooked) and the multipliers, through dlls\survival.txt.
+-- Settings: Survival section of config.lua. Log tag [PF Survival].
+local TAG = "[PF Survival] "
 local function log(msg) print(TAG .. tostring(msg) .. "\n") end
+local LIB = REBALANCE_LIB
+local try, valid, address, game_loop = LIB.try, LIB.valid, LIB.address, LIB.game_loop
+local ROOT = REBALANCE_ROOT or ""
 
--- Game-thread scheduling. LoopAsync + ExecuteInGameThread queues a new
--- callback from a worker thread on every tick; with several mods doing it,
--- UE4SS raced ("Ref was not function") and crashed the game on 2026-10-16.
--- This UE4SS build can loop directly on the game thread; the old pattern is
--- only a fallback.
-local LIB = REBALANCE_LIB  -- shared helpers (Scripts\lib.lua)
-local try, valid, address, game_loop, game_later = LIB.try, LIB.valid, LIB.address, LIB.game_loop, LIB.game_later
-
-local function find_output_path()
-    if REBALANCE_ROOT then return REBALANCE_ROOT .. "survivaltweaks\\dlls\\local-player-asc.ini" end
-    -- UE4SS typically invokes the file with its absolute source filename.
-    local path = try(function() return debug.getinfo(1, "S").source end)
-    if type(path) == "string" then
-        path = path:gsub("^@", ""):gsub("/", "\\")
-        local base = path:match("^(.*\\)[Ss]cripts\\main%.lua$")
-        if base then return base .. "dlls\\local-player-asc.ini" end
+------------------------------------------------------------------ config
+local DEFAULTS = {
+    { "staminaDrainMultiplier",   1.2, "stamina drain" },
+    { "hungerDrainMultiplier",    0.2, "hunger drain" },
+    { "energyDrainMultiplier",    1.0, "energy drain" },
+    { "healthDamageMultiplier",   1.5, "damage you take" },
+    { "bodyWarmthLossMultiplier", 2.0, "body warmth loss" },
+}
+local function load_config()
+    local cfg = {}
+    for _, d in ipairs(DEFAULTS) do cfg[d[1]] = d[2] end
+    local f = io.open(ROOT .. "config\\Survival.lua", "r")  -- generated from config.lua by the loader
+    if not f then return cfg end
+    local text = f:read("*a")
+    f:close()
+    local chunk = load(text, "Survival.lua", "t", {})
+    local user = chunk and try(chunk)
+    if type(user) == "table" then
+        for _, d in ipairs(DEFAULTS) do
+            local v = tonumber(user[d[1]])
+            if v then cfg[d[1]] = math.max(0, math.min(10, v)) end
+        end
     end
-    -- UE4SS 3.0.x supports IterateGameDirectories in Lua.
-    local roots = try(function() return IterateGameDirectories() end)
-    local win64 = roots and roots.Game and roots.Game.Binaries and roots.Game.Binaries.Win64
-    local root = win64 and win64.__absolute_path
-    if type(root) == "string" then
-        return root .. "\\ue4ss\\Mods\\SurvivalTweaks\\dlls\\local-player-asc.ini"
+    return cfg
+end
+local CFG = load_config()
+
+------------------------------------------------------------------ player
+local helpers = try(function() return require("UEHelpers") end)
+local asc_lib = nil
+local function player_asc()
+    local pc = helpers and try(function() return helpers.GetPlayerController() end)
+    if not valid(pc) or try(function() return pc:IsLocalPlayerController() end) ~= true then return nil end
+    local pawn = try(function() return pc.Pawn end)
+    if not valid(pawn) then return nil end
+    local asc = try(function() return pawn.AbilitySystemComponent end)
+    if valid(asc) then return asc end
+    asc_lib = asc_lib or try(function()
+        return StaticFindObject("/Script/GameplayAbilities.Default__AbilitySystemBlueprintLibrary")
+    end)
+    asc = valid(asc_lib) and try(function() return asc_lib:GetAbilitySystemComponent(pawn) end)
+    return valid(asc) and asc or nil
+end
+
+-- Any live object of the class: only its vtable is used.
+local function one_of(class_name)
+    for _, o in ipairs(try(function() return FindAllOf(class_name) end) or {}) do
+        if valid(o) and not LIB.fname(o):find("^Default__") then return address(o) end
     end
     return nil
 end
-local destination = find_output_path()
-if not destination then
-    log("FAIL CLOSED: unable to resolve mod-owned DLL directory")
-    return
-end
 
-local helpers = try(function() return require("UEHelpers") end)
-local function local_player_asc()
-    if type(helpers) ~= "table" then return nil end
-    -- UEHelpers.GetPlayerController chooses a local controller. In the
-    -- supported single-local-player test this is PlayerController(0).
-    local pc = try(function() return helpers.GetPlayerController() end)
-    if not valid(pc) then return nil end
-    if try(function() return pc:IsLocalPlayerController() end) ~= true then
-        return nil
-    end
-    local pawn = try(function() return pc.Pawn end)
-    if not valid(pawn) then return nil end
-    if try(function() return pawn:IsLocallyControlled() end) ~= true then
-        return nil
-    end
-    local pawnAddress = address(pawn)
-    if not pawnAddress then return nil end
-    local state = try(function() return pawn.PlayerState end)
-    local function asc_from_actor(actor)
-        if not valid(actor) then return nil end
-        local reflected = try(function() return actor.AbilitySystemComponent end)
-        if valid(reflected) then return reflected end
-        local cdo = try(function()
-            return StaticFindObject("/Script/GameplayAbilities.Default__AbilitySystemBlueprintLibrary")
-        end)
-        if valid(cdo) then
-            local asComponent = try(function() return cdo:GetAbilitySystemComponent(actor) end)
-            if valid(asComponent) then return asComponent end
-        end
-        return nil
-    end
-    local asc = asc_from_actor(pawn) or asc_from_actor(state)
-    if not valid(asc) then
-        -- Last-resort exact UI link already proven in the old PF probe.
-        -- Never choose an arbitrary panel: require Character == local pawn.
-        local panels = try(function() return FindAllOf("UW_CharStatusPanel_C") end)
-        if type(panels) == "table" then
-            for _, panel in ipairs(panels) do
-                if valid(panel) and address(try(function() return panel.Character end)) == pawnAddress then
-                    local candidate = try(function() return panel.AbilistySystemComp end)
-                    if valid(candidate) then asc = candidate; break end
-                end
-            end
-        end
-    end
-    return address(asc)
-end
-
--- Like MoreBackpackSlots/CustomStackSize: the initial game-thread
--- callback runs during main-menu initialization. The native DLL does
--- nothing expensive during the intro and may resolve GAS from this
--- point forward, even while the player's ASC is not spawned yet.
-local mainMenuGameThreadReady = false
-local lastAddress = nil
-local lastError = nil
-local last_data = nil
+------------------------------------------------------------------ feed
+local OUT = ROOT .. "dlls\\survival.txt"
+local last, sets = nil, nil
 local function publish()
-    -- All UObject operations must run on the game thread.
-    local addr = local_player_asc() or 0
-    local data = string.format("[LocalPlayer]\nASC=%X\nMainMenuReady=%d\n",
-        addr, mainMenuGameThreadReady and 1 or 0)
-    if data == last_data then return end    -- unchanged: no disk write
-    last_data = data
-    local file, errorText = io.open(destination, "wb")
-    if not file then
-        if errorText ~= lastError then
-            log("FAIL CLOSED: cannot write identity witness: " .. tostring(errorText))
-            lastError = errorText
-        end
-        return
+    local asc = player_asc()
+    -- The attribute sets only need finding once (their vtables never change).
+    if not sets then
+        local s, h, t = one_of("AttributeSet_StaminaMetrics"), one_of("AttributeSet_HealthMetrics"),
+            one_of("AttributeSet_TemperatureMetrics")
+        if s and h and t then sets = { s, h, t } end
     end
-    file:write(data)
-    file:close()
-    if addr ~= lastAddress then
-        log(string.format("PlayerController(0) target ASC=0x%X (0 disables all native writes)", addr))
-        lastAddress = addr
-    end
+    local text = string.format(
+        "asc=%X\nstamina_set=%X\nhealth_set=%X\ntemperature_set=%X\nstamina=%.3f\nhunger=%.3f\nenergy=%.3f\nhealth=%.3f\nwarmth=%.3f\nend\n",
+        asc and address(asc) or 0, sets and sets[1] or 0, sets and sets[2] or 0, sets and sets[3] or 0,
+        CFG.staminaDrainMultiplier, CFG.hungerDrainMultiplier, CFG.energyDrainMultiplier,
+        CFG.healthDamageMultiplier, CFG.bodyWarmthLossMultiplier)
+    if text == last then return end
+    last = text
+    local f = io.open(OUT .. ".tmp", "wb")
+    if not f then return end
+    f:write(text)
+    f:close()
+    os.remove(OUT)
+    os.rename(OUT .. ".tmp", OUT)
 end
 
-log("identity witness ready; refresh every 1 second (game thread)")
--- Queue exactly like the other Permafrost mods which initialize their
--- settings in the main menu before a save is loaded.
-local queued, queueError = pcall(function()
-    game_later(0, function()
-        mainMenuGameThreadReady = true
-        log("MAIN MENU GAME THREAD READY: native GAS resolver may start now")
-        publish()
-    end)
-end)
-if not queued then
-    log("MAIN MENU QUEUE FAILED: native resolver remains disabled: " ..
-        tostring(queueError))
-end
 game_loop(1000, function()
     local ok, err = pcall(publish)
-    if not ok then log("player identity refresh failed: " .. tostring(err)) end
+    if not ok then log("error: " .. tostring(err)) end
 end)
+
+log(string.format("loaded: stamina x%.2f, hunger x%.2f, energy x%.2f, damage x%.2f, warmth loss x%.2f",
+    CFG.staminaDrainMultiplier, CFG.hungerDrainMultiplier, CFG.energyDrainMultiplier,
+    CFG.healthDamageMultiplier, CFG.bodyWarmthLossMultiplier))

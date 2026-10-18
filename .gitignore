@@ -9,7 +9,6 @@ Permafrost/Binaries/Win64/ue4ss/Mods/Rebalance/dlls/
 
 # Rebuilt from config.lua at every game start
 Permafrost/Binaries/Win64/ue4ss/Mods/Rebalance/config/
-Permafrost/Binaries/Win64/ue4ss/Mods/Rebalance/survivaltweaks/
 
 # Logs and reports written while playing
 *.log

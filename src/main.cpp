@@ -1,10 +1,21 @@
-// CraftFromStorage: craft (and repair) using items in nearby storage chests.
+// Permafrost Overhaul, native side (dlls\main.dll). One UE4SS C++ mod that
+// holds everything Lua cannot do. Each part is driven by its Lua module
+// through a small text file in dlls\, so turning a module off in config.lua
+// turns its native part off too:
+//   craft from storage  <- craftfromstorage.lua  (state.txt)
+//   spawn blocker       <- spawndistance.lua     (spawnblock.txt)
+//   headshot damage     <- betterguns.lua        (combat.txt)
+//   gunshot hall reverb <- betterguns.lua        (reverb.txt)
+//   toolbelt knife      <- toolbelt.lua          (toolbelt.txt)
+//   survival rates      <- survivaltweaks.lua    (survival.txt)
+//   crash report        <- Modules.diagnostics   (config.lua)
+// Log: dlls\main.log.
 //
-// UE4SS C++ mod (dlls\main.dll), paired with Scripts\main.lua. UE4SS.dll is
-// not linked; the mod object mirrors UE4SS v3.0.1 CppUserModBase (0xD0 bytes,
-// 16 virtual slots), same as SurvivalTweaks.
+// UE4SS.dll is not linked; the mod object mirrors UE4SS v3.0.1
+// CppUserModBase (0xD0 bytes, 16 virtual slots). Build: src\build.bat.
 //
-// No game addresses are hardcoded. Everything comes from reflection at runtime:
+// Craft from storage: crafting and repairs use items in nearby storage
+// chests. No game addresses are hardcoded; everything comes from reflection:
 //  - Lua writes dlls\state.txt: the player's EquipmentComponent, inventory
 //    components of storage chests in range, and UFunction addresses.
 //  - "Crafting in progress" = a crafting/repair/crafting-widget UFunction is on
@@ -38,7 +49,7 @@
 
 namespace {
 
-constexpr wchar_t kTag[] = L"[CraftFromStorage] ";
+constexpr wchar_t kTag[] = L"[Overhaul] ";
 
 // ---- logging -----------------------------------------------------------------
 
@@ -494,6 +505,7 @@ void read_spawnblock();  // spawn blocker, below
 void read_combat();      // headshots, below
 void read_toolbelt();    // toolbelt, below
 void read_reverb();      // hall reverb, below
+void read_survival();    // survival rates, below
 
 void tick() {
     ULONGLONG now = GetTickCount64();
@@ -505,6 +517,7 @@ void tick() {
     read_combat();
     read_toolbelt();
     read_reverb();
+    read_survival();
     if (g_patched_count.load() > 0 && now >= g_next_stats) {
         g_next_stats = now + 60000;
         int q = g_stat_qty.exchange(0), l = g_stat_list.exchange(0), r = g_stat_remove.exchange(0),
@@ -1270,157 +1283,208 @@ void install_crash_report() {
     logf(L"crash report ready (armed once in the world): dlls\\crash_report.txt");
 }
 
-// ---- hosted SurvivalTweaks ------------------------------------------------------
-// Since the 2026-10-17 merge this DLL is Rebalance's dlls\main.dll, and UE4SS
-// loads only one main.dll per mod folder. SurvivalTweaks' binary (no source)
-// is a UE4SS C++ mod too, so it is loaded here from
-// Rebalance\survivaltweaks\dlls\SurvivalTweaks.dll and its callbacks are
-// forwarded. Its vtable (checked 2026-10-17): slot 0 destructor, 1 on_update,
-// 2 on_unreal_init, 3-15 empty. It finds its config.lua two folders up from
-// its own file, i.e. Rebalance\survivaltweaks\config.lua.
-using ChildFn = void (*)(void*);
-using ChildStart = void* (*)();
-using ChildUninstall = void (*)(void*);
-HMODULE g_child_mod = nullptr;
-void* g_child = nullptr;
-ChildUninstall g_child_uninstall = nullptr;
+// ---- survival rates (was the closed SurvivalTweaks.dll) -----------------------------
+// Scales the player's own stat losses: stamina, hunger, energy, health damage
+// and body warmth. Positive changes, other characters and non-additive changes
+// stay vanilla.
+// Every GAS change passes through the owning attribute set's virtual
+// PreGameplayEffectExecute(FGameplayEffectModCallbackData&). The Stamina set
+// (Stamina, Hunger, Energy) overrides it; the Health and Temperature sets use
+// the base UAttributeSet version (`mov al,1; ret`). Those three vtable slots
+// are pointed at our hooks, which call the game's function first, then scale
+// the change: callback data +0x08 -> FGameplayModifierEvaluatedData
+// (Attribute at +0x00 with AttributeName FString first, ModifierOp at +0x38,
+// Magnitude float at +0x3C), +0x10 -> target ability system component.
+// No game addresses are hardcoded: Lua (survivaltweaks.lua) writes
+// dlls\survival.txt with the player's ASC, one live object of each attribute
+// set (their vtables are read from them) and the multipliers. The slot is the
+// one where the Stamina set holds its own PreGameplayEffectExecute (checked by
+// its first bytes) and the Health and Temperature sets both hold the base
+// function. Anything unexpected: no hook (vanilla). Only vtable entries change.
+using PreExecFn = bool (*)(void* self, void* data);
+PreExecFn g_pre_stamina = nullptr, g_pre_base = nullptr;
+std::atomic<uintptr_t> g_survival_asc{0};
+// stamina, hunger, energy, health, warmth (float bits, 1.0 = vanilla)
+std::atomic<uint32_t> g_surv_mult[5] = {0x3F800000, 0x3F800000, 0x3F800000, 0x3F800000, 0x3F800000};
+std::atomic<int> g_surv_logged{0};
+bool g_survival_hooked = false, g_survival_failed = false;
+FILETIME g_survival_time{};
+uintptr_t g_set_stamina = 0, g_set_health = 0, g_set_temp = 0;
 
-void child_call(int slot) {
-    if (!g_child) return;
-    ChildFn* vt = *reinterpret_cast<ChildFn**>(g_child);
-    vt[slot](g_child);
+const wchar_t* const kSurvivalNames[5] = {L"Stamina", L"Hunger", L"Energy", L"Health", L"BodyWarmth"};
+
+int survival_index(const uint8_t* evaluated) {
+    // FGameplayAttribute.AttributeName: FString { wchar_t* data; int num; int max }.
+    const wchar_t* name = *reinterpret_cast<wchar_t* const*>(evaluated);
+    const int num = *reinterpret_cast<const int*>(evaluated + 8);
+    if (!name || num <= 1 || num > 64 || !readable(name, num * sizeof(wchar_t))) return -1;
+    for (int i = 0; i < 5; ++i) {
+        if (wcscmp(name, kSurvivalNames[i]) == 0) return i;
+    }
+    return -1;
 }
 
-// The child reads survivaltweaks\config.lua when it starts, before any Lua
-// runs, so its settings are copied here from the Survival section of the
-// mod's single config.lua (lines "name = number," between "Survival = {"
-// and the closing "},").
-void write_child_config() {
-    std::wstring src = g_dir + L"..\\config.lua";
-    FILE* in = _wfopen(src.c_str(), L"rb");
-    if (!in) return;
-    std::string text;
-    char buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) text.append(buf, n);
-    fclose(in);
-
-    size_t start = text.find("Survival = {");
-    if (start == std::string::npos) return;
-    size_t end = text.find("}", start);
-    if (end == std::string::npos) return;
-    std::string out = "-- GENERATED from config.lua (Survival section) at every game start. Edit config.lua.\nreturn {\n";
-    int count = 0;
-    size_t pos = text.find('\n', start);
-    while (pos != std::string::npos && pos < end) {
-        size_t eol = text.find('\n', pos + 1);
-        std::string line = text.substr(pos + 1, (eol == std::string::npos ? text.size() : eol) - pos - 1);
-        pos = eol;
-        size_t cut = line.find("--");
-        if (cut != std::string::npos) line.erase(cut);
-        size_t eq = line.find('=');
-        if (eq == std::string::npos) continue;
-        std::string key = line.substr(0, eq), val = line.substr(eq + 1);
-        auto trim = [](std::string& s) {
-            const char* ws = " \t\r,";
-            s.erase(0, s.find_first_not_of(ws));
-            size_t last = s.find_last_not_of(ws);
-            s.erase(last == std::string::npos ? 0 : last + 1);
-        };
-        trim(key);
-        trim(val);
-        if (key.empty() || val.empty()) continue;
-        bool ok_key = std::all_of(key.begin(), key.end(), [](char c) { return isalnum((unsigned char)c) || c == '_'; });
-        bool ok_val = std::all_of(val.begin(), val.end(), [](char c) { return isdigit((unsigned char)c) || c == '.' || c == '-'; });
-        if (!ok_key || !ok_val) continue;
-        out += "    " + key + " = " + val + ",\n";
-        ++count;
+void survival_scale(void* data) {
+    auto d = static_cast<uint8_t*>(data);
+    void* target = *reinterpret_cast<void**>(d + 0x10);
+    const uintptr_t asc = g_survival_asc.load(std::memory_order_relaxed);
+    if (!asc || reinterpret_cast<uintptr_t>(target) != asc) return;  // the player's own stats only
+    auto evaluated = *reinterpret_cast<uint8_t**>(d + 0x08);
+    if (!evaluated || evaluated[0x38] != 0) return;  // additive changes only
+    float& magnitude = *reinterpret_cast<float*>(evaluated + 0x3C);
+    if (!(magnitude < 0.0f)) return;                  // losses only
+    const int i = survival_index(evaluated);
+    if (i < 0) {
+        // Other attributes (alcohol, durability...) are expected here; log a
+        // few so a renamed attribute shows up.
+        static std::atomic<int> other_logged{0};
+        if (other_logged.fetch_add(1) < 5) {
+            const wchar_t* name = *reinterpret_cast<wchar_t* const*>(evaluated);
+            const int num = *reinterpret_cast<const int*>(evaluated + 8);
+            bool ok = name && num > 1 && num <= 64 && readable(name, num * sizeof(wchar_t));
+            logf(L"survival: loss on %ls left vanilla", ok ? name : L"(unnamed attribute)");
+        }
+        return;
     }
-    out += "}\n";
-    if (count == 0) return;
-    std::wstring dst = g_dir + L"..\\survivaltweaks\\config.lua";
-    FILE* o = _wfopen(dst.c_str(), L"wb");
-    if (!o) return;
-    fwrite(out.data(), 1, out.size(), o);
-    fclose(o);
-    logf(L"SurvivalTweaks settings: %d values from config.lua", count);
+    const uint32_t bits = g_surv_mult[i].load(std::memory_order_relaxed);
+    float mult;
+    memcpy(&mult, &bits, 4);
+    if (mult == 1.0f) return;
+    const float before = magnitude;
+    magnitude = before * mult;
+    int n = g_surv_logged.fetch_add(1) + 1;
+    if (n <= 10) logf(L"survival: %ls %.3f -> %.3f (x%.2f)", kSurvivalNames[i], before, magnitude, mult);
 }
 
-// Modules.<name> from config.lua: 0 only when the line says "= 0".
-bool module_on(const char* name) {
-    std::wstring src = g_dir + L"..\\config.lua";
-    FILE* in = _wfopen(src.c_str(), L"rb");
-    if (!in) return true;
-    std::string text;
-    char buf[4096];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) text.append(buf, n);
-    fclose(in);
-    size_t mods = text.find("Modules = {");
-    if (mods == std::string::npos) return true;
-    size_t end = text.find("}", mods);
-    if (end == std::string::npos) return true;
-    std::string block = text.substr(mods, end - mods);
-    size_t pos = 0;
-    while (pos < block.size()) {
-        size_t eol = block.find('\n', pos);
-        if (eol == std::string::npos) eol = block.size();
-        std::string line = block.substr(pos, eol - pos);
-        pos = eol + 1;
-        size_t k = line.find_first_not_of(" \t");
-        if (k == std::string::npos || line.compare(k, strlen(name), name) != 0) continue;
-        size_t eq = line.find_first_not_of(" \t", k + strlen(name));
-        if (eq == std::string::npos || line[eq] != '=') continue;
-        size_t v = line.find_first_not_of(" \t", eq + 1);
-        return !(v != std::string::npos && line[v] == '0');
-    }
+bool pre_stamina_hook(void* self, void* data) {
+    const bool r = g_pre_stamina(self, data);
+    survival_scale(data);
+    return r;
+}
+
+bool pre_base_hook(void* self, void* data) {
+    const bool r = g_pre_base(self, data);
+    survival_scale(data);
+    return r;
+}
+
+bool code_matches(uintptr_t fn, const uint8_t* sig, size_t n) {
+    return fn && readable(reinterpret_cast<void*>(fn), n) && memcmp(reinterpret_cast<void*>(fn), sig, n) == 0;
+}
+
+bool patch_slot(void** slot, void* hook) {
+    DWORD old = 0;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old)) return false;
+    *slot = hook;
+    VirtualProtect(slot, sizeof(void*), old, &old);
     return true;
 }
 
-void load_child() {
-    if (!module_on("survivaltweaks")) {
-        logf(L"SurvivalTweaks off (Modules.survivaltweaks = 0)");
+void install_survival() {
+    if (g_survival_hooked || g_survival_failed || !g_set_stamina || !g_set_health || !g_set_temp) return;
+    auto vt_of = [](uintptr_t obj) -> void** {
+        if (!readable(reinterpret_cast<void*>(obj), sizeof(void*))) return nullptr;
+        auto vt = *reinterpret_cast<void***>(obj);
+        return readable(vt, 200 * sizeof(void*)) ? vt : nullptr;
+    };
+    void** vs = vt_of(g_set_stamina);
+    void** vh = vt_of(g_set_health);
+    void** vtm = vt_of(g_set_temp);
+    if (!vs || !vh || !vtm) return;  // objects not readable yet; Lua sends new ones
+    // UAttributeSet_StaminaMetrics::PreGameplayEffectExecute prologue:
+    // mov [rsp+8],rbx; mov [rsp+10h],rsi; push rdi; sub rsp,60h; mov rbx,[rdx+8]
+    static const uint8_t stamina_sig[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10,
+                                          0x57, 0x48, 0x83, 0xEC, 0x60, 0x48, 0x8B, 0x5A, 0x08};
+    static const uint8_t base_sig[] = {0xB0, 0x01, 0xC3};  // mov al,1; ret
+    int found = -1, matches = 0;
+    for (int i = 0; i < 200; ++i) {
+        auto s = reinterpret_cast<uintptr_t>(vs[i]);
+        auto h = reinterpret_cast<uintptr_t>(vh[i]);
+        if (h != reinterpret_cast<uintptr_t>(vtm[i])) continue;
+        if (code_matches(s, stamina_sig, sizeof(stamina_sig)) && code_matches(h, base_sig, sizeof(base_sig))) {
+            found = i;
+            ++matches;
+        }
+    }
+    if (matches != 1) {
+        g_survival_failed = true;
+        logf(L"survival rates OFF: PreGameplayEffectExecute slot found %d times (need 1); stats stay vanilla", matches);
         return;
     }
-    write_child_config();
-    std::wstring path = g_dir + L"..\\survivaltweaks\\dlls\\SurvivalTweaks.dll";
-    g_child_mod = LoadLibraryW(path.c_str());
-    if (!g_child_mod) {
-        logf(L"SurvivalTweaks not loaded (%ls, error %lu)", path.c_str(), GetLastError());
+    g_pre_stamina = reinterpret_cast<PreExecFn>(vs[found]);
+    g_pre_base = reinterpret_cast<PreExecFn>(vh[found]);
+    bool ok = patch_slot(&vs[found], reinterpret_cast<void*>(&pre_stamina_hook));
+    ok = ok && patch_slot(&vh[found], reinterpret_cast<void*>(&pre_base_hook));
+    if (ok && vtm != vh) ok = patch_slot(&vtm[found], reinterpret_cast<void*>(&pre_base_hook));
+    if (!ok) {
+        // Put back whatever was changed.
+        if (vs[found] == reinterpret_cast<void*>(&pre_stamina_hook)) patch_slot(&vs[found], reinterpret_cast<void*>(g_pre_stamina));
+        if (vh[found] == reinterpret_cast<void*>(&pre_base_hook)) patch_slot(&vh[found], reinterpret_cast<void*>(g_pre_base));
+        g_survival_failed = true;
+        logf(L"survival rates OFF: vtable patch failed");
         return;
     }
-    auto start = reinterpret_cast<ChildStart>(GetProcAddress(g_child_mod, "start_mod"));
-    g_child_uninstall = reinterpret_cast<ChildUninstall>(GetProcAddress(g_child_mod, "uninstall_mod"));
-    if (!start) {
-        logf(L"SurvivalTweaks has no start_mod export");
-        return;
-    }
-    g_child = start();
-    logf(L"SurvivalTweaks hosted: %ls", g_child ? L"started" : L"start_mod returned null");
+    g_survival_hooked = true;
+    logf(L"survival rates hooked (vtable slot %d of the Stamina, Health and Temperature sets)", found);
 }
 
-// ---- UE4SS CppUserModBase mirror ----------------------------------------------
+void read_survival() {
+    std::wstring path = g_dir + L"survival.txt";
+    WIN32_FILE_ATTRIBUTE_DATA attr{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attr)) return;
+    if (CompareFileTime(&attr.ftLastWriteTime, &g_survival_time) == 0) {
+        install_survival();
+        return;
+    }
+    FILE* f = _wfopen(path.c_str(), L"rb");
+    if (!f) return;
+    char buf[1024] = {};
+    size_t got = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    std::string text(buf, got);
+    if (text.find("\nend\n") == std::string::npos) return;
+    g_survival_time = attr.ftLastWriteTime;
+    auto hex = [&](const char* key) -> uintptr_t {
+        std::string k = std::string("\n") + key + "=";
+        size_t at = ("\n" + text).find(k);
+        if (at == std::string::npos) return 0;
+        return static_cast<uintptr_t>(std::strtoull(text.c_str() + at + k.size() - 1, nullptr, 16));
+    };
+    g_survival_asc.store(hex("asc"));
+    g_set_stamina = hex("stamina_set");
+    g_set_health = hex("health_set");
+    g_set_temp = hex("temperature_set");
+    static const char* const keys[5] = {"stamina", "hunger", "energy", "health", "warmth"};
+    for (int i = 0; i < 5; ++i) {
+        std::string k = std::string("\n") + keys[i] + "=";
+        size_t at = ("\n" + text).find(k);
+        if (at == std::string::npos) continue;
+        float m = static_cast<float>(std::strtod(text.c_str() + at + k.size() - 1, nullptr));
+        if (m >= 0.0f && m <= 10.0f) {
+            uint32_t bits;
+            memcpy(&bits, &m, 4);
+            g_surv_mult[i].store(bits);
+        }
+    }
+    install_survival();
+}
 
 class Mod {
 public:
     Mod() {
         ModName = L"Rebalance";
         ModVersion = L"1.3.0";
-        ModDescription = L"Rebalance native side: craft from nearby storage, hosts SurvivalTweaks";
+        ModDescription = L"Permafrost Overhaul native side: spawn blocker, headshots, toolbelt, survival rates, gunshot reverb, crafting from storage";
         ModAuthors = L"Permafrost Mods";
         ModIntendedSDKVersion = L"3.0.1";
     }
     virtual ~Mod() {
-        if (g_child && g_child_uninstall) g_child_uninstall(g_child);
-        g_child = nullptr;
     }
     virtual void on_update() {
         tick();
-        child_call(1);
     }
     virtual void on_unreal_init() {
         unreal_ready_ = 1;
-        child_call(2);
     }
     virtual void v03() {}
     virtual void v04() {}
@@ -1462,7 +1526,7 @@ extern "C" __declspec(dllexport) Mod* start_mod() {
     if (n && n < MAX_PATH) {
         g_dir.assign(self, n);
         g_dir.erase(g_dir.find_last_of(L'\\') + 1);
-        g_log = g_dir + L"CraftFromStorage.log";
+        g_log = g_dir + L"main.log";
         DeleteFileW(g_log.c_str());
         // state.txt left from the last session holds that session's
         // addresses; wrapping them would write into random memory.
@@ -1478,7 +1542,7 @@ extern "C" __declspec(dllexport) Mod* start_mod() {
     install_toolbelt();
     DeleteFileW((g_dir + L"reverb.txt").c_str());
     install_reverb();
-    load_child();
+    DeleteFileW((g_dir + L"survival.txt").c_str());  // last session's addresses
     return new Mod();
 }
 

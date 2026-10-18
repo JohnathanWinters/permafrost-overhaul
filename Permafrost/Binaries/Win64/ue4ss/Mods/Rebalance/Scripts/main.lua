@@ -375,6 +375,7 @@ local SPLIT = {
     { file = "config\\Recipes.lua",        sections = { "Recipes" } },
     { file = "config\\Food.lua",           sections = { "Food" } },
     { file = "config\\HUD.lua",            sections = { "HUD" } },
+    { file = "config\\Survival.lua",       sections = { "Survival" } },
     { file = "config\\Containers.lua",       list = "Containers" },
 }
 

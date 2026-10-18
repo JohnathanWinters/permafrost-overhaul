@@ -111,4 +111,4 @@ Only containers you have not opened yet change. Edit the `Containers` list to ch
 
 ## Building main.dll
 
-`src\main.cpp` builds the native part (`dlls\main.dll`) with `src\build.bat` (Visual Studio 2022 Build Tools). It holds the spawn blocker, headshot damage, toolbelt check, gunshot reverb and crafting from storage, each driven by its Lua module.
+`src\main.cpp` builds the native part (`dlls\main.dll`) with `src\build.bat` (Visual Studio 2022 Build Tools). It holds everything Lua cannot reach: crafting from storage, the spawn blocker, headshot damage, the toolbelt check, survival rates, the gunshot reverb and the crash report. Each part is driven by its Lua module, so turning a module off turns its native part off too. Everything is source; there are no closed binaries.
