@@ -63,7 +63,7 @@ local found_logged = 0
 -- Shadow settings, enforced every pass: the light still threw no shadow
 -- with CastShadows on (user screenshot 2026-10-18), so the other switches
 -- are forced too and every shadow-related value is logged once.
-local SHADOW_PROPS = { "CastShadows", "CastDynamicShadow", "CastStaticShadow", "bCastVolumetricShadow",
+local SHADOW_PROPS = { "CastShadows", "CastDynamicShadows", "CastStaticShadows", "CastRaytracedShadow", "bCastVolumetricShadow",
                        "bAffectDynamicIndirectLighting", "ShadowResolutionScale", "ShadowBias", "ShadowSlopeBias",
                        "ContactShadowLength", "Mobility", "bUseRayTracedDistanceFieldShadows", "MaxDrawDistance",
                        "bCastShadowsFromCinematicObjectsOnly", "bAffectsWorld", "SourceRadius", "SoftSourceRadius" }
@@ -77,7 +77,7 @@ local function enforce_shadows(comp)
         log("light shadow settings (before): " .. table.concat(parts, ", "))
     end
     local changed = false
-    for _, k in ipairs({ "CastDynamicShadow", "CastStaticShadow" }) do
+    for _, k in ipairs({ "CastDynamicShadows", "CastStaticShadows" }) do  -- plural in UE 5.4
         if get(comp, k) == false then LIB.set(comp, k, true) changed = true end
     end
     if get(comp, "bCastShadowsFromCinematicObjectsOnly") == true then
