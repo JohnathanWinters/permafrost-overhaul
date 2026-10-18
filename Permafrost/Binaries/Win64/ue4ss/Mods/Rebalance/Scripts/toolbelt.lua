@@ -402,8 +402,103 @@ local function held_tool_type(equip)
     return tonumber(try(function() return cfgobj.ToolType end))
 end
 
+-- Auto-draw the knife (user 2026-10-18): holding the interact key at
+-- something that needs a knife (a box's lock, an animal to skin) with the
+-- knife only in the hotbar presses that knife's quick slot for you
+-- (Enhanced Input IA_QuickSlotN, as if its number key were pressed). The
+-- game then unlocks or skins normally with the knife in hand. About a second
+-- after you let go, whatever you held before is selected again.
+-- If drawing the knife does not work, boxes (never animals) fall back to
+-- opening the lock directly.
+local QUICK = "/Game/Permafrost/Blueprints/Input/Character/IA_QuickSlot%d.IA_QuickSlot%d"
+local quick_actions = {}
+local input_sub_path = nil
+local function press_quick_slot(n)
+    local ia = quick_actions[n]
+    if ia == nil then
+        ia = try(function() return StaticFindObject(string.format(QUICK, n, n)) end) or false
+        quick_actions[n] = ia
+    end
+    if not valid(ia) then return false end
+    local sub = input_sub_path and resolve(input_sub_path)
+    if not sub then
+        for _, x in ipairs(try(function() return FindAllOf("EnhancedInputLocalPlayerSubsystem") end) or {}) do
+            if valid(x) and not fname(x):find("^Default__") then sub = x input_sub_path = path_of(x) break end
+        end
+    end
+    if not valid(sub) then return false end
+    return try(function() sub:InjectInputVectorForAction(ia, { X = 1, Y = 0, Z = 0 }, {}, {}); return true end) == true
+end
+
+-- Everything is looked up fresh from the 8 quick slots at the moment it is
+-- used, so moving items around the hotbar never presses the wrong number
+-- (user 2026-10-18): the knife's slot right before pressing it, and the
+-- item you held before by the item itself, not by its old slot number.
+local QUICK_SLOTS = 8
+local function quick_slot_of(equip, addr)
+    if not addr then return nil end
+    local n = math.min(QUICK_SLOTS, tonumber(LIB.call(equip, "GetNumOfSlots")) or 0)
+    for i = 0, n - 1 do
+        local it = LIB.call(equip, "GetItemInSlot", i)
+        if valid(it) and LIB.address(it) == addr then return i + 1 end
+    end
+    return nil
+end
+local function held_item_addr(equip)
+    local held = try(function() return equip.HeldItem.InventoryItem end)
+    return valid(held) and LIB.address(held) or nil
+end
+-- 1-based quick slot holding a knife, or nil (hotbar only, never the backpack).
+local function knife_quick_slot(equip)
+    local n = math.min(QUICK_SLOTS, tonumber(LIB.call(equip, "GetNumOfSlots")) or 0)
+    for i = 0, n - 1 do
+        local it = LIB.call(equip, "GetItemInSlot", i)
+        if valid(it) and item_tool(it) == TOOL.knife then return i + 1 end
+    end
+    return nil
+end
+
+local draw = nil             -- { prev = slot or false, at = time, check_at = time, released_at = time }
+local draw_failed = false
+local function target_lock(pc, pawn)
+    local p = LIB.call(pawn, "K2_GetActorLocation")
+    local rot = LIB.call(pc, "GetControlRotation")
+    if not p or not rot then return nil end
+    local px, py, pz = p.X, p.Y, p.Z
+    local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
+    local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
+    local best, best_d, best_creature = nil, nil, false
+    for _, lock in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
+        if valid(lock) and LIB.get(lock, "bLocked") == true and tonumber(LIB.get(lock, "RequiredTool")) == TOOL.knife then
+            local owner = LIB.call(lock, "GetOwner")
+            local l = valid(owner) and LIB.call(owner, "K2_GetActorLocation")
+            if l then
+                local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
+                local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if d < 250 and d > 1 and (dx * fx + dy * fy + dz * fz) / d > 0.5 and (not best_d or d < best_d) then
+                    best, best_d, best_creature = lock, d, is_creature(owner)
+                end
+            end
+        end
+    end
+    return best, best_creature
+end
+
+local function direct_unlock(lock)
+    local max = tonumber(LIB.get(lock, "MaxLockDurability")) or 100
+    local seconds = math.max(0.2, tonumber(CFG.hotbarUnlockSeconds) or 2)
+    self_unlock = true
+    local opened = LIB.call(lock, "TryToUnlock", TOOL.knife, 255, math.max(0.01, max / (seconds * 10)))
+    self_unlock = false
+    if unlock_logged < 10 then
+        unlock_logged = unlock_logged + 1
+        log(string.format("hotbar knife on %s: lock %.0f/%.0f%s", fname(LIB.call(lock, "GetOwner")),
+            tonumber(LIB.get(lock, "LockDurability")) or -1, max, opened == true and " -> unlocked" or ""))
+    end
+end
+
 local function hotbar_unlock()
-    if CFG.knife ~= 1 or not TOOL.knife or not has_knife then return end
+    if CFG.knife ~= 1 or not TOOL.knife then return end
     helpers = helpers or try(function() return require("UEHelpers") end)
     local pc = helpers and try(function() return helpers.GetPlayerController() end)
     if not valid(pc) then return end
@@ -412,48 +507,60 @@ local function hotbar_unlock()
     for _, k in ipairs(interact_keys) do
         if LIB.call(pc, "IsInputKeyDown", k) == true then down = true break end
     end
-    if not down then return end
     local pawn = LIB.get(pc, "Pawn")
-    if not valid(pawn) then return end
     local equip = player_equipment()
-    if equip and held_tool_type(equip) == TOOL.knife then return end   -- knife in hand: vanilla
-    local p = LIB.call(pawn, "K2_GetActorLocation")
-    local rot = LIB.call(pc, "GetControlRotation")
-    if not p or not rot then return end
-    local px, py, pz = p.X, p.Y, p.Z
-    local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
-    local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
-    -- The locked padlock wanting a knife that you face, within 2.5 m.
-    local best, best_d = nil, nil
-    for _, lock in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
-        if valid(lock) and LIB.get(lock, "bLocked") == true and tonumber(LIB.get(lock, "RequiredTool")) == TOOL.knife then
-            local owner = LIB.call(lock, "GetOwner")
-            -- Animals and carcasses use a padlock as their skinning progress;
-            -- finishing it from here skipped the skinning and left a wolf
-            -- stuck (2026-10-18). Only real locks (boxes) are opened.
-            if valid(owner) and is_creature(owner) then owner = nil end
-            local l = valid(owner) and LIB.call(owner, "K2_GetActorLocation")
-            if l then
-                local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
-                local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-                if d < 250 and d > 1 and (dx * fx + dy * fy + dz * fz) / d > 0.5 and (not best_d or d < best_d) then
-                    best, best_d = lock, d
+    if not valid(pawn) or not equip then return end
+    local now = os.clock()
+    local in_hand = held_tool_type(equip) == TOOL.knife
+
+    -- After a draw: check it worked, and put the knife away after release.
+    if draw then
+        if draw.check_at and now >= draw.check_at then
+            draw.check_at = nil
+            if not in_hand then
+                draw_failed = true
+                log("auto-draw did not put the knife in your hands; boxes fall back to opening directly")
+                draw = nil
+                return
+            end
+            log("knife drawn automatically from quick slot " .. tostring(draw.slot))
+        end
+        if down then
+            draw.released_at = nil
+        else
+            draw.released_at = draw.released_at or now
+            if now - draw.released_at >= 1.0 then
+                if in_hand then
+                    if draw.prev_item then
+                        -- Where that item is now; gone from the hotbar: leave the knife out.
+                        local slot = quick_slot_of(equip, draw.prev_item)
+                        if slot then press_quick_slot(slot) end
+                    else
+                        -- Nothing was held: press the knife's current slot again to put it away.
+                        local ks = knife_quick_slot(equip)
+                        if ks and quick_slot_of(equip, held_item_addr(equip)) == ks then press_quick_slot(ks) end
+                    end
                 end
+                draw = nil
+            end
+        end
+        return
+    end
+
+    if not down or in_hand or not has_knife then return end
+    local lock, creature = target_lock(pc, pawn)
+    if not lock then return end
+    if not draw_failed then
+        local ks = knife_quick_slot(equip)
+        if ks then
+            local prev_item = held_item_addr(equip)
+            if press_quick_slot(ks) then
+                draw = { slot = ks, prev_item = prev_item, check_at = now + 0.6 }
+                return
             end
         end
     end
-    if not best then return end
-    local max = tonumber(LIB.get(best, "MaxLockDurability")) or 100
-    local seconds = math.max(0.2, tonumber(CFG.hotbarUnlockSeconds) or 2)
-    local damage = math.max(0.01, max / (seconds * 10))     -- this loop runs 10 times a second
-    self_unlock = true
-    local opened = LIB.call(best, "TryToUnlock", TOOL.knife, 255, damage)
-    self_unlock = false
-    if unlock_logged < 10 then
-        unlock_logged = unlock_logged + 1
-        log(string.format("hotbar knife on %s: lock %.0f/%.0f%s", fname(LIB.call(best, "GetOwner")),
-            tonumber(LIB.get(best, "LockDurability")) or -1, max, opened == true and " -> unlocked" or ""))
-    end
+    if not creature then direct_unlock(lock) end
 end
 
 game_loop(100, function()
