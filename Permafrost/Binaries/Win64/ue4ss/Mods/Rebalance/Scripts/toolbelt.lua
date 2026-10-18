@@ -29,6 +29,7 @@ local DEFAULTS = {
     { "anyKnifeTier",    1, 0, "1 = any knife opens what needs a knife; a lower tier costs durability" },
     { "knifeBaseCost",   2, 0, "durability % an under-tier knife uses per opening" },
     { "knifeCostPerTier", 8, 0, "extra durability % per tier step the knife is below the requirement" },
+    { "hotbarUnlockSeconds", 2, 0, "holding the interact key this long opens a knife lock with a knife in the hotbar" },
 }
 local function load_config()
     local cfg = {}
@@ -343,6 +344,108 @@ if not start() then
     game_later(2000, retry)
 end
 
+------------------------------------------------------------------ hotbar knife unlock
+-- Holding F on a knife lock (electrical boxes) with the knife only in the
+-- hotbar did nothing (user 2026-10-18): the box's Blueprint calls
+-- UPadlock::TryToUnlock(ToolType, ToolTier, Damage) only for the item in
+-- your hands, and both Lua hooks above never fire because the game calls
+-- them natively. So while the interact key is held near a locked padlock
+-- that wants a knife, and a knife is in the hotbar (not in your hands), this
+-- calls the game's own TryToUnlock as a top-tier knife. It wears the lock
+-- down over hotbarUnlockSeconds; at 0 the game unlocks it itself (sound,
+-- PadlockUnlocked event, box opens). Knife durability is not needed or used.
+local interact_keys = nil
+local function find_interact_keys()
+    local found = {}
+    for _, imc in ipairs(try(function() return FindAllOf("InputMappingContext") end) or {}) do
+        if not fname(imc):find("^Default__") then
+            try(function()
+                imc.Mappings:ForEach(function(_, elem)
+                    local m = elem:get()
+                    local action = fname(m.Action)
+                    if action == "IA_InteractionHold" or action == "IA_Interaction" then
+                        local k = try(function() return m.Key.KeyName:ToString() end)
+                        if k and k ~= "None" then found[k] = true end
+                    end
+                end)
+            end)
+        end
+    end
+    local list = {}
+    for k in pairs(found) do list[#list + 1] = { KeyName = FName(k) } end
+    if #list == 0 then list = { { KeyName = FName("F") } } end
+    local names = {}
+    for k in pairs(found) do names[#names + 1] = k end
+    log("interact keys for hotbar unlock: " .. (#names > 0 and table.concat(names, ", ") or "F (default)"))
+    return list
+end
+
+local has_knife = false          -- refreshed by the native feed below (every 0.5 s)
+local unlock_logged = 0
+local function held_tool_type(equip)
+    local item = try(function() return equip.HeldItem.ItemActor end)
+    local cfgobj = valid(item) and try(function() return item.ItemConfig end)
+    if not valid(cfgobj) then
+        local inv_item = try(function() return equip.HeldItem.InventoryItem end)
+        if valid(inv_item) then return (item_tool(inv_item)) end
+        return nil
+    end
+    return tonumber(try(function() return cfgobj.ToolType end))
+end
+
+local function hotbar_unlock()
+    if CFG.knife ~= 1 or not TOOL.knife or not has_knife then return end
+    helpers = helpers or try(function() return require("UEHelpers") end)
+    local pc = helpers and try(function() return helpers.GetPlayerController() end)
+    if not valid(pc) then return end
+    interact_keys = interact_keys or find_interact_keys()
+    local down = false
+    for _, k in ipairs(interact_keys) do
+        if LIB.call(pc, "IsInputKeyDown", k) == true then down = true break end
+    end
+    if not down then return end
+    local pawn = LIB.get(pc, "Pawn")
+    if not valid(pawn) then return end
+    local equip = player_equipment()
+    if equip and held_tool_type(equip) == TOOL.knife then return end   -- knife in hand: vanilla
+    local p = LIB.call(pawn, "K2_GetActorLocation")
+    local rot = LIB.call(pc, "GetControlRotation")
+    if not p or not rot then return end
+    local px, py, pz = p.X, p.Y, p.Z
+    local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
+    local fx, fy, fz = math.cos(pitch) * math.cos(yaw), math.cos(pitch) * math.sin(yaw), math.sin(pitch)
+    -- The locked padlock wanting a knife that you face, within 2.5 m.
+    local best, best_d = nil, nil
+    for _, lock in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
+        if valid(lock) and LIB.get(lock, "bLocked") == true and tonumber(LIB.get(lock, "RequiredTool")) == TOOL.knife then
+            local owner = LIB.call(lock, "GetOwner")
+            local l = valid(owner) and LIB.call(owner, "K2_GetActorLocation")
+            if l then
+                local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz
+                local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if d < 250 and d > 1 and (dx * fx + dy * fy + dz * fz) / d > 0.5 and (not best_d or d < best_d) then
+                    best, best_d = lock, d
+                end
+            end
+        end
+    end
+    if not best then return end
+    local max = tonumber(LIB.get(best, "MaxLockDurability")) or 100
+    local seconds = math.max(0.2, tonumber(CFG.hotbarUnlockSeconds) or 2)
+    local damage = math.max(0.01, max / (seconds * 10))     -- this loop runs 10 times a second
+    local opened = LIB.call(best, "TryToUnlock", TOOL.knife, 255, damage)
+    if unlock_logged < 10 then
+        unlock_logged = unlock_logged + 1
+        log(string.format("hotbar knife on %s: lock %.0f/%.0f%s", fname(LIB.call(best, "GetOwner")),
+            tonumber(LIB.get(best, "LockDurability")) or -1, max, opened == true and " -> unlocked" or ""))
+    end
+end
+
+game_loop(100, function()
+    local ok, err = pcall(hotbar_unlock)
+    if not ok and unlock_logged < 10 then unlock_logged = unlock_logged + 1 log("hotbar unlock error: " .. tostring(err)) end
+end)
+
 ------------------------------------------------------------------ native feed
 -- dlls\main.dll detours the native IsHeldToolCompatible (the HUD and the
 -- interaction start call it natively, so "invalid tool" showed for skinning
@@ -354,6 +457,7 @@ game_loop(500, function()
     local ok, err = pcall(function()
         if not TOOL.knife or CFG.knife ~= 1 then return end
         local has = #tools_of(TOOL.knife) > 0
+        has_knife = has
         local text = string.format("knife=%d\nhas=%d\nend\n", TOOL.knife, has and 1 or 0)
         if text == last_tool_text then return end
         last_tool_text = text

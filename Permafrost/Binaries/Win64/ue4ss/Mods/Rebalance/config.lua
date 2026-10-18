@@ -214,6 +214,7 @@ return {
         anyKnifeTier               = 1     , -- vanilla 0     1 = any knife opens what needs a knife; a lower tier costs durability
         knifeBaseCost              = 2     , -- vanilla -     durability % an under-tier knife uses per opening
         knifeCostPerTier           = 8     , -- vanilla -     extra durability % per tier step the knife is short (refined counts as a step)
+        hotbarUnlockSeconds        = 2     , -- vanilla -     hold the interact key this long to open a knife lock with a knife in your hotbar (knife durability not used)
     },
 
     -- CONTAINERS: most are already looted (empty); the odd untouched one is full.
