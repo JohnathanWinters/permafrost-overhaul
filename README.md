@@ -1,134 +1,105 @@
 # Permafrost Overhaul
 
-One mod that makes Permafrost a harder, more believable survival game. Scarce but real loot, rare food, tougher hunting and enemies, and a quieter HUD.
+A tougher, more immersive take on **Permafrost**. Loot is scarce, food is harder to find, hunting is more dangerous, and enemies behave more aggressively. The HUD is quieter, survival is harsher, and the world feels less predictable.
 
-Each feature is its own file in `Scripts` and can be turned off on its own.
+**Modular by design.** Every feature can be enabled or disabled independently.
 
-## Install
+## Installation
 
-1. Install [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) v3.0.1 for Permafrost.
-2. Download the latest zip from [Releases](https://github.com/JohnathanWinters/permafrost-overhaul/releases) and copy its `Rebalance` folder into `Permafrost\Binaries\Win64\ue4ss\Mods\`.
-3. Start the game.
+1. Install [UE4SS v3.0.1](https://github.com/UE4SS-RE/RE-UE4SS) for Permafrost.
+2. Download the latest [release](https://github.com/JohnathanWinters/permafrost-overhaul/releases).
+3. Copy the `Rebalance` folder into `Permafrost\Binaries\Win64\ue4ss\Mods\`.
+4. Launch the game.
 
-## Settings
+## Configuration
 
-Edit `config.lua` in the `Rebalance` folder and restart the game. Each line shows our value, the vanilla value and what it does ("vanilla -" = no such game setting).
+Edit `config.lua` inside the `Rebalance` folder, then restart the game.
 
-`Modules` at the top turns each feature on (1) or off (0). Below it is one section per feature. Files in `config\` are rebuilt from `config.lua` at every start; do not edit them.
+- **Modules:** Set each feature to `1` to enable it or `0` to disable it.
+- **Values:** Each setting shows the mod value, vanilla value, and a description.
+- **`vanilla -`:** The setting does not exist in the original game.
+- **Config files:** Files in `config\` are regenerated from `config.lua` at startup. Edit `config.lua`, not those generated files.
 
 ## Features
 
-Simplest first.
+### Survival & Weather
 
-### eternaltorches
-- Placed torches never run out of fuel.
+| Module | Changes |
+|---|---|
+| `eternaltorches` | Placed torches never run out of fuel. |
+| `food` | Food and drinks no longer restore health. Tooltips are updated; medicine still heals. |
+| `weather` | Snowfall is 3× more likely, blizzards 1.75× more likely. Snowfall remains the more common event. |
+| `survivaltweaks` | Take 1.5× damage. Hunger drains at 0.2× the vanilla rate. Body warmth drains at 0.12×, but cold drains warmth faster the further it exceeds your clothing's protection. |
+| `buildsnow` | Snow accumulates on player-built structures exposed to the sky. Fixes vanilla snow appearing on stoves and torches under roofs. |
+| `recipes` | Makeshift Heater requires cloth, plastic, and 1 chemical to craft, and 1 chemical to repair. |
 
-### food
-- Food and drinks no longer heal (tooltips too). Medicine still does.
+### Loot & Resources
 
-### recipes
-- Makeshift Heater: cloth, plastic and 1 chemicals to craft; 1 chemicals to repair.
+| Module | Changes |
+|---|---|
+| `loot` | Food and drinks have a 15% drop chance, except from animals. Trash always yields 3–5 plastic. Carcasses yield 1.5× pelts, fat, and bones; big game yields 4× meat. |
+| `containers` | Most containers have already been looted. See the container table below for untouched chances and typical contents. Only unopened containers are affected. Locked containers are always full. |
+| `enemydrops` | Armed hostiles drop their weapon at 10–50% condition. There is a 70% chance to drop 1–3 cloth. |
+| `craftfromstorage` | Craft, build, and repair using items stored within 15 m. |
+| `toolbelt` | Automatically draw a hotbar knife to skin animals or open electrical boxes. Any knife tier works, regardless of durability. |
+| `recipes` | Adjusts the Makeshift Heater's crafting and repair costs. |
 
-### weather
-- Snowfall 3x as likely, blizzards 1.75x. Snowfall stays more common.
+### Combat & Enemies
 
-### survivaltweaks
-- 1.5x damage taken, 0.2x hunger.
-- Body warmth drains slower (0.12x), still faster the further the cold is past your clothing.
+| Module | Changes |
+|---|---|
+| `encounters` | Hostile encounters occur one-third as often. Scripted encounter locations take 3× longer to reset. |
+| `humanai` | Hostiles never flinch, reposition less often, and return fire more aggressively. |
+| `patrols` | When no hostile is within 300 m, a patrol of 1–3 enemies may arrive, at most once every 10 minutes. Patrols disappear beyond 400 m. |
+| `spawndistance` | Enemies spawn 2× farther away, with encounters 100–200 m away. Groups spread out and arrive individually. Enemy spawners remain inactive within 100 m. Animals never spawn within 100 m; any that do are moved farther away. |
+| `harderhunting` | Animals see 3× and hear 4× farther, and move 1.25× faster. Animal populations are reduced by 40%. Prey flees and avoids you for 3 minutes. |
+| `betterguns` | Gunshots are louder, with strong indoor reverb that is more pronounced inside buildings. Other sounds duck after gunfire. Recoil is 2× and camera kick is 2.5×. Headshots deal 8× damage with guns and bows, and 2× with melee. |
+| `accuracy` | Movement, jumping, and rapid fire increase weapon spread. Aiming and crouching reduce it. The Accuracy skill further reduces spread, and crosshair lines widen to reflect current accuracy. |
 
-### locks
-- Unlocked boxes stay unlocked after a reload.
+### Exploration & Movement
 
-### flashlight
-- Sharp shadows, aims higher, reaches 3x farther.
+| Module | Changes |
+|---|---|
+| `locks` | Unlocked containers remain unlocked after reloading. |
+| `flashlight` | Sharper shadows, higher aiming angle, and 3× range. |
+| `togglemovement` | Sprint and crouch toggle on tap. Sprint stops when movement keys are released and resumes after a weapon swap. |
+| `travelcost` | Fast travel consumes 1 food or drink, taking items from the hotbar first (highest slot first), then inventory. Travel is blocked if neither is available. |
+| `bedtravel` | Look at your bed and press `X` to fast travel. The key is configurable. The travel lamp remains usable. |
+| `hud` | Health indicators appear only when a stat falls below 25%. The hotbar appears for 2 seconds after a hotbar key press; the weapon panel appears for 2 seconds after switching weapons and stays hidden with empty hands. The quest panel appears for 6 seconds after a change or when closing a menu. The compass remains visible. |
 
-### togglemovement
-- Tap to sprint or crouch. Sprint stops when you let go of the movement keys and resumes after a weapon swap.
+## Container Loot Chances
 
-### travelcost
-- Fast travel costs 1 food or drink: hotbar first (highest slot first), then inventory. None on you, no trip.
+Most containers have been picked clean. The chance of finding an untouched container, along with its typical contents, depends on the type.
 
-### bedtravel
-- Look at your bed and press X to fast travel. The key is set in config. The travel lamp still works.
+| Container | Untouched chance | Typical contents |
+|---|---:|---|
+| Fridges | 6% | Drinks, food |
+| Medical boxes | 6% | Bandages, painkillers, medkits |
+| Cars | 8% | Plastic, wire, metal, fabric, sometimes fuel |
+| Electrical boxes | 8% | Components, wire |
+| Toolboxes | 10% | Metal, components, wire, batteries |
+| Cabinets and lockers | 12% | Household items |
+| Military vehicles | 12% | Military supplies, ammunition |
+| Suitcases | 15% | Clothes, snacks, cash |
+| Ammo boxes | 15% | About 70 rounds |
+| Trash bins | 20% | Junk |
+| Dead bodies | 20% | A few items |
+| Safes | 25% | Cash, with 3× the usual amount |
 
-### hud
-- Health area shows only when a stat is below 25%.
-- Hotbar shows 2 s after a hotbar key.
-- Weapon box shows 2 s after a switch, hidden with empty hands.
-- Quest box shows 6 s after a change or after closing a menu.
-- Compass stays.
+Only unopened containers are affected. Locked containers are always full.
 
-### encounters
-- Hostile encounters a third as often. Scripted spots take 3x longer to return.
+## Development & Work in Progress
 
-### loot
-- Food and drinks are rare (15%) except on animals.
-- Trash always drops 3 to 5 plastic.
-- Carcasses give 1.5x pelts, fat and bones; big game 4x meat.
+| Module | Status |
+|---|---|
+| `f8log` | Press `F8` to save nearby lootable objects to `loot_census.txt`. Logging only; does not change the game. |
+| `warmth` | Clothing warmth that scales with the cold. Logging only for now. |
+| `doors` | Tracks door and shutter states across saves. Logging only for now. |
 
-### enemydrops
-- Armed hostiles drop their gun (10 to 50% condition). 70% drop 1 to 3 cloth.
+## Building `main.dll`
 
-### harderhunting
-- Animals see 3x and hear 4x farther, move 1.25x faster.
-- 40% fewer animals. Prey flees and avoids you for 3 minutes.
+The native module is built from `src\main.cpp` using `src\build.bat` and Visual Studio 2022 Build Tools. It handles features that Lua cannot access, including crafting from storage, spawn blockers, headshot damage, toolbelt checks, survival rates, fast-travel costs, gunshot reverb, and crash reporting.
 
-### humanai
-- Hostiles never flinch, reposition less and shoot back more.
+Each native feature follows its corresponding Lua module toggle.
 
-### patrols
-- No hostile within 300 m: a patrol of 1 to 3 comes through, at most every 10 minutes. Gone at 400 m.
-
-### spawndistance
-- Spawns 2x farther; encounters 100 to 200 m away. Groups spread out and arrive one at a time.
-- Enemy spawners stay quiet within 100 m. Animals never spawn within 100 m; any that do are moved out.
-
-### craftfromstorage
-- Craft, build and repair with items from storage within 15 m.
-
-### toolbelt
-- A knife in your hotbar is drawn automatically to skin animals and open electrical boxes.
-- Any knife tier works. Durability does not matter.
-
-### accuracy
-- Moving, jumping and rapid fire widen your spread. Aiming and crouching tighten it.
-- Your Accuracy skill shrinks it.
-- The crosshair lines open up with it.
-
-### buildsnow
-- Snow settles on your built structures where open to the sky.
-- Fixes vanilla snow on stoves and torches under a roof.
-
-### betterguns
-- Louder gunshots with a big-hall reverb (stronger indoors). Other sounds duck after your shots.
-- 2x recoil, 2.5x camera kick.
-- Headshots: 8x for guns and bows, 2x melee.
-
-### containers
-Most containers are already picked clean. The rare untouched one holds what the real thing would:
-
-| Container | Untouched | Typical haul |
-|---|---|---|
-| Fridges | 6% | drinks, food |
-| Medical boxes | 6% | bandages, painkillers, medkits |
-| Cars | 8% | plastic, wire, metal, fabric, sometimes fuel |
-| Electricity boxes | 8% | components, wire |
-| Toolboxes | 10% | metal, components, wire, batteries |
-| Cabinets and lockers | 12% | household items |
-| Military vehicles | 12% | military supplies, ammo |
-| Suitcases | 15% | clothes, snacks, cash |
-| Ammo boxes | 15% | about 70 rounds |
-| Trash bins | 20% | junk |
-| Dead bodies | 20% | a few items |
-| Safes | 25% | cash, tripled |
-
-Only unopened containers change. Locked ones were never looted, so they are always full.
-
-### Tools and work in progress
-- **f8log**: F8 saves every lootable around you to `loot_census.txt`. Changes nothing.
-- **warmth**: clothing warmth that scales with the cold. Logging only for now.
-- **doors**: doors and shutters keep their state across saves. Logging only for now.
-
-## Building main.dll
-
-`src\main.cpp` builds `dlls\main.dll` with `src\build.bat` (Visual Studio 2022 Build Tools). It holds what Lua cannot reach: crafting from storage, the spawn and animal spawn blockers, headshot damage, the toolbelt check, survival rates, the fast travel cost, the gunshot reverb and the crash report. Each part follows its Lua module's switch. Everything is source; no closed binaries.
+**All source code is included. No closed-source binaries.**
