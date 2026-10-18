@@ -111,7 +111,7 @@ Only containers you have not opened yet change. A container that is still locked
 ### hud
 - Health and the stat bars show only when one drops below 25%.
 - The hotbar shows for 2 seconds after you press a hotbar key.
-- The quest box fades 12 seconds after it changes or after you close a menu. The compass stays.
+- The quest box fades 6 seconds after it changes or after you close a menu. The compass stays.
 
 ### buildsnow
 - Snow settles on the tops of your built structures, like on the game's own buildings.

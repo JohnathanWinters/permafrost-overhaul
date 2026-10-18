@@ -209,71 +209,96 @@ local function bed_in_view(pc, pawn)
 end
 
 ------------------------------------------------------------------ open the map
-local open_fn_param = false   -- false = not looked up; nil = none; else { name, kind }
-local function marker_arg()
-    if open_fn_param == false then
-        open_fn_param = nil
-        local fn = try(function() return StaticFindObject("/Script/Permafrost.UI_ManagerComponent:CLIENT_OpenFastTravelMap") end)
-        if valid(fn) then
-            try(function()
-                fn:ForEachProperty(function(prop)
-                    if open_fn_param then return end
-                    local n = try(function() return prop:GetFName():ToString() end) or "?"
-                    local k = try(function() return prop:GetClass():GetFName():ToString() end) or "?"
-                    open_fn_param = { n, k }
-                end)
-            end)
-        end
-        log("CLIENT_OpenFastTravelMap takes: " .. (open_fn_param and (open_fn_param[1] .. " (" .. open_fn_param[2] .. ")") or "nothing readable"))
+-- CLIENT_OpenFastTravelMap(MarkerID: FName) needs the map marker of the
+-- travel point you are at: with an empty name nothing opened (2026-10-18).
+-- The beds are not registered points yet, so the marker the travel lamp
+-- uses is learned: a hook logs every map opening and keeps its MarkerID
+-- (dlls\bed_marker.txt, so it survives restarts). Beds then open the map
+-- with that marker; the trip itself goes wherever you pick.
+local MARKER_FILE = ROOT .. "dlls\\bed_marker.txt"
+local known_marker = nil
+do
+    local f = io.open(MARKER_FILE, "r")
+    if f then
+        local t = f:read("*l")
+        f:close()
+        if t and t ~= "" and t ~= "None" then known_marker = t end
     end
-    local k = open_fn_param and open_fn_param[2] or ""
-    if k == "NameProperty" then return FName("None") end
-    if k == "StrProperty" then return "" end
-    if k == "StructProperty" then return { A = 0, B = 0, C = 0, D = 0 } end
-    return 0
 end
+local own_call = false
+local open_hooked = try(function()
+    RegisterHook("/Script/Permafrost.UI_ManagerComponent:CLIENT_OpenFastTravelMap", function(_, marker)
+        local m = try(function() return marker:get():ToString() end) or "?"
+        log(string.format("fast travel map opened by %s with marker '%s'", own_call and "a bed" or "the game", m))
+        if not own_call and m ~= "" and m ~= "None" and m ~= "?" and m ~= known_marker then
+            known_marker = m
+            local f = io.open(MARKER_FILE, "w")
+            if f then f:write(m .. "\n") f:close() end
+            log("remembered travel marker '" .. m .. "' for beds")
+        end
+    end)
+    return true
+end)
 
 local bed_trip_until = 0
+local warned_no_marker = false
 local function open_map(pc, bed)
+    if not known_marker then
+        if not warned_no_marker then
+            warned_no_marker = true
+            log("no travel marker known yet: open fast travel once from a travel lamp, then beds work")
+        end
+        return
+    end
     local uim_class = try(function() return StaticFindObject("/Script/Permafrost.UI_ManagerComponent") end)
     local uim = valid(uim_class) and call(pc, "GetComponentByClass", uim_class)
     if not valid(uim) then log("UI manager not found on the player controller") return end
-    local ok = try(function() uim:CLIENT_OpenFastTravelMap(marker_arg()) return true end)
+    own_call = true
+    local ok = try(function() uim:CLIENT_OpenFastTravelMap(FName(known_marker)) return true end)
+    own_call = false
     bed_trip_until = os.clock() + 180
-    log(string.format("fast travel map from %s: %s", fname(bed), ok and "opened" or "call failed"))
+    log(string.format("fast travel map from %s (marker '%s'): %s", fname(bed), known_marker, ok and "called" or "call failed"))
 end
 
 ------------------------------------------------------------------ prompt layout (discovery)
+-- The "Press F Rest" box is the bed's own InteractionIndicator component
+-- (a widget component on the actor, as on doors), not a screen widget.
 local prompt_logged = false
-local function log_prompt()
+local function log_prompt(bed)
     if prompt_logged then return end
-    local list = try(function() return FindAllOf("UW_InteractionIndicator_C") end) or {}
-    for _, w in ipairs(list) do
-        if valid(w) and not fname(w):find("^Default__") and call(w, "IsInViewport") == true then
-            prompt_logged = true
-            local lines = {}
-            local function walk(x, depth, route)
-                if depth > 9 or #lines > 80 then return end
-                local cn = fname(call(x, "GetClass")) or "?"
-                local t = ""
-                if cn == "TextBlock" or cn:find("RichText") then
-                    t = " '" .. tostring(try(function() return x:GetText():ToString() end)) .. "'"
-                end
-                lines[#lines + 1] = string.rep(" ", depth) .. route .. " " .. fname(x) .. ":" .. cn .. t
-                local tree = get(x, "WidgetTree")
-                local root = valid(tree) and get(tree, "RootWidget")
-                if valid(root) then walk(root, depth + 1, route .. ".0") end
-                local n = tonumber(call(x, "GetChildrenCount")) or 0
-                for i = 0, n - 1 do
-                    local c = call(x, "GetChildAt", i)
-                    if valid(c) then walk(c, depth + 1, route .. "." .. (i + 1)) end
-                end
+    local wc = get(bed, "InteractionIndicator")
+    local w = valid(wc) and (call(wc, "GetUserWidgetObject") or call(wc, "GetWidget"))
+    if not valid(w) then
+        -- Any InteractionIndicator-like widget in the viewport instead.
+        for _, cn in ipairs({ "UW_InteractionIndicator_C", "BP_InteractionHint_C" }) do
+            for _, x in ipairs(try(function() return FindAllOf(cn) end) or {}) do
+                if valid(x) and not fname(x):find("^Default__") then w = x break end
             end
-            walk(w, 0, "r")
-            log("interaction prompt layout (" .. fname(w) .. "):\n" .. table.concat(lines, "\n"))
-            return
+            if valid(w) then break end
         end
     end
+    if not valid(w) then return end
+    prompt_logged = true
+    local lines = {}
+    local function walk(x, depth, route)
+        if depth > 9 or #lines > 80 then return end
+        local cn = fname(call(x, "GetClass")) or "?"
+        local t = ""
+        if cn == "TextBlock" or cn:find("RichText") then
+            t = " '" .. tostring(try(function() return x:GetText():ToString() end)) .. "'"
+        end
+        lines[#lines + 1] = string.rep(" ", depth) .. route .. " " .. fname(x) .. ":" .. cn .. t
+        local tree = get(x, "WidgetTree")
+        local root = valid(tree) and get(tree, "RootWidget")
+        if valid(root) then walk(root, depth + 1, route .. ".0") end
+        local n = tonumber(call(x, "GetChildrenCount")) or 0
+        for i = 0, n - 1 do
+            local c = call(x, "GetChildAt", i)
+            if valid(c) then walk(c, depth + 1, route .. "." .. (i + 1)) end
+        end
+    end
+    walk(w, 0, "r")
+    log("interaction prompt layout (" .. fname(w) .. ", component " .. tostring(valid(wc) and fname(wc)) .. "):\n" .. table.concat(lines, "\n"))
 end
 
 ------------------------------------------------------------------ autosave (discovery)
@@ -309,10 +334,13 @@ game_loop(500, function()
             next_points = os.clock() + 10
             points_pass()
         end
-        if not prompt_logged and bed_in_view(pc, pawn) then log_prompt() end
+        if not prompt_logged then
+            local bed = bed_in_view(pc, pawn)
+            if bed then log_prompt(bed) end
+        end
     end)
     if not ok then note("error: " .. tostring(err)) end
 end)
 
-log(string.format("loaded: look at a bed and press %s for fast travel (autosave log %s)", CFG.travelKey,
-    save_hooked and "on" or "off"))
+log(string.format("loaded: look at a bed and press %s for fast travel (autosave log %s, map hook %s, marker %s)", CFG.travelKey,
+    save_hooked and "on" or "off", open_hooked and "on" or "off", tostring(known_marker)))

@@ -30,7 +30,7 @@ local DEFAULTS = {
     { "enabled",           1,    "1 = on" },
     { "lowStatPercent",    25,   "health area shows while any of its bars is below this %" },
     { "hotbarShowSeconds", 2,    "hotbar shows this long after a hotbar key" },
-    { "questShowSeconds",  12,   "quest box shows this long after it changes" },
+    { "questShowSeconds",  6,    "quest box shows this long after it changes" },
     { "weaponShowSeconds", 2,    "selected weapon box shows this long after you switch items" },
     { "fadeSeconds",       0.25, "fade in/out time" },
     { "debugLog",          1,    "1 = log the HUD parts found and dump the tree" },
@@ -236,20 +236,21 @@ end
 
 
 -- Lowest fill under a widget: ProgressBars, and "284/300"-style texts.
-local function lowest_stat(w, depth, best)
-    if depth > 8 then return best end
+-- Also returns the widget holding that lowest value (for the log).
+local function lowest_stat(w, depth, best, src)
+    if depth > 8 then return best, src end
     local c = cls_name(w)
     if c:find("ProgressBar") then
         local pct = tonumber(get(w, "Percent"))
-        if pct then best = math.min(best or 1, pct) end
+        if pct and pct < (best or 2) then best, src = pct, fname(w) end
     elseif c:find("TextBlock") then
         local t = try(function() return w:GetText():ToString() end)
         local a, b = t and t:match("^%s*(%d+)%s*/%s*(%d+)%s*$")
         a, b = tonumber(a), tonumber(b)
-        if a and b and b > 0 then best = math.min(best or 1, a / b) end
+        if a and b and b > 0 and a / b < (best or 2) then best, src = a / b, fname(w) .. " '" .. t .. "'" end
     end
-    each_child(w, function(ch) best = lowest_stat(ch, depth + 1, best) end)
-    return best
+    each_child(w, function(ch) best, src = lowest_stat(ch, depth + 1, best, src) end)
+    return best, src
 end
 
 -- A menu is open when the game shows the mouse cursor. (The ledger menu
@@ -294,23 +295,32 @@ end
 local targets = { health = 1, hotbar = 1, quest = 1, weapon = 1 }
 local opacity = { health = 1, hotbar = 1, quest = 1, weapon = 1 }
 local ticks = 0
+local health_logged = nil
 local function decide(hud)
     local now = os.clock()
     ticks = ticks + 1
     -- Health area (every 0.5 s): shown while a bar is low. No bars found:
     -- it stays shown (it may hold the game's own warning icons).
     if ticks % 5 == 0 then
-        local low = nil
+        local low, src = nil, nil
         for _, r in ipairs(bars) do
             local b = follow(hud, r)
             local pct = b and tonumber(get(b, "Percent"))
-            if pct then low = math.min(low or 1, pct) end
+            if pct and pct < (low or 2) then low, src = pct, fname(b) end
         end
         for _, e in ipairs(routes.health) do
             local w = follow(hud, e.route)
-            if w then low = lowest_stat(w, 0, low) end
+            if w then low, src = lowest_stat(w, 0, low, src) end
         end
-        targets.health = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
+        local want = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
+        -- Logged on each change: which stat keeps the health area shown
+        -- (user 2026-10-18: it stopped hiding; 0 bars were found).
+        if want ~= targets.health or health_logged == nil then
+            health_logged = true
+            log(want == 1 and string.format("health area shown: lowest %s from %s", low and string.format("%.0f%%", low * 100) or "nothing readable", tostring(src))
+                or string.format("health area hidden: lowest %.0f%% (%s)", (low or 1) * 100, tostring(src)))
+        end
+        targets.health = want
     end
     local pc = player_pc()
     -- Hotbar: any number key.

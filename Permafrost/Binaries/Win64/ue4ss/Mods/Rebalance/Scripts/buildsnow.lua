@@ -56,6 +56,7 @@ local PARAMS = {
 -- K2_GetComponentsByClass gives 0 mesh components on built parts, so the
 -- part's own class properties are walked for mesh components,
 -- plus the root component.
+local mesh_props = {}      -- class name -> property names holding mesh components
 local function part_meshes(actor)
     local out, seen = {}, {}
     local function add(c)
@@ -69,6 +70,7 @@ local function part_meshes(actor)
         end
     end
     add(get(actor, "RootComponent"))
+    local from_root = #out
     -- Components the blueprint created (the stove and torch bodies were
     -- missed by the 3-level walk, 2026-10-18), then 8 class levels.
     for _, field in ipairs({ "BlueprintCreatedComponents", "InstanceComponents" }) do
@@ -76,7 +78,19 @@ local function part_meshes(actor)
             actor[field]:ForEach(function(_, e) try(function() add(e:get()) end) end)
         end)
     end
+    -- The property walk is slow (about 5 ms a part; 225 ms stutters at load,
+    -- 2026-10-18): only when the component lists gave no mesh.
+    if #out > from_root then return out end
+    -- Which properties hold meshes is the same for every part of a class:
+    -- the walk runs once per class, later parts read just those properties.
     local cls = call(actor, "GetClass")
+    local key = fname(cls) or "?"
+    local known = mesh_props[key]
+    if known then
+        for _, n in ipairs(known) do add(get(actor, n)) end
+        return out
+    end
+    known = {}
     for _ = 1, 8 do
         if not valid(cls) then break end
         try(function()
@@ -84,12 +98,17 @@ local function part_meshes(actor)
                 local n = try(function() return prop:GetFName():ToString() end)
                 if n then
                     local v = get(actor, n)
-                    if type(v) == "userdata" then try(function() add(v) end) end
+                    if type(v) == "userdata" then
+                        local before = #out
+                        try(function() add(v) end)
+                        if #out > before then known[#known + 1] = n end
+                    end
                 end
             end)
         end)
         cls = try(function() return cls:GetSuperStruct() end)
     end
+    mesh_props[key] = known
     return out
 end
 
@@ -422,7 +441,7 @@ REBALANCE_ON_ACTOR("/Script/Permafrost.BuildPartBase", function(obj)
 end)
 
 local world_at, rescan_at, reported = nil, 0, -1
-game_loop(1000, function()
+game_loop(250, function()
     if CFG.coverage <= 0 then return end
     local ok, err = pcall(function()
         local helpers = try(function() return require("UEHelpers") end)
@@ -450,7 +469,7 @@ game_loop(1000, function()
         local handled = 0
         for _, p in ipairs(list) do
             if p and not done[p] then
-                if handled >= 40 then queue[#queue + 1] = p     -- 40 parts per second at most
+                if handled >= 6 then queue[#queue + 1] = p      -- 6 parts per 0.25 s (spread out: no stutter)
                 else
                     local a = LIB.resolve(p)
                     if a then
