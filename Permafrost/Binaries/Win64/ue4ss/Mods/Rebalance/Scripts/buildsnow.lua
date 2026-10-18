@@ -167,8 +167,22 @@ end
 
 local stats = { parts = 0, mats = 0, swapped = 0, skipped = 0, sheltered = 0, cleared = 0 }
 local verified, described = false, false
+-- True when the material has `name` in its parent chain.
+local function in_chain(mat, name)
+    local m = mat
+    for _ = 1, 6 do
+        if fname(m) == name then return true end
+        local p = get(m, "Parent")
+        if not valid(p) then return false end
+        m = p
+    end
+    return false
+end
+
+-- Only built construction (MMI_BuildPart_VT) is rebuilt on the snowy wood
+-- material; benches, rugs and the like keep their own material.
 local function snow_material(c, i, old, parent)
-    if not CFG.swapMaterial or not parent then return old end
+    if not CFG.swapMaterial or not parent or not in_chain(old, "MMI_BuildPart_VT") then return old end
     local src = collect(old)
     local new = call(c, "CreateDynamicMaterialInstance", i, parent, FName("None"))
     if not valid(new) then return old end
@@ -203,11 +217,17 @@ local helpers_cache = nil
 local trace_warned, shelter_logged = false, 0
 local NOCOLOR = { R = 0, G = 0, B = 0, A = 0 }
 
+local function player_pawn()
+    local pc = helpers_cache and try(function() return helpers_cache.GetPlayerController() end)
+    local pawn = valid(pc) and get(pc, "Pawn")
+    return valid(pawn) and pawn or nil
+end
+
 local function trace_up(ksl, actor, x, y, z0, z1, ignore_self)
     local hit = {}
     local blocked = try(function()
         return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = z0 }, { X = x, Y = y, Z = z1 },
-            0, false, ignore_self and { actor } or {}, 0, hit, true, NOCOLOR, NOCOLOR, 0.0)
+            0, false, ignore_self and { actor, player_pawn() } or {}, 0, hit, true, NOCOLOR, NOCOLOR, 0.0)
     end)
     local o = hit.HitObjectHandle and try(function() return hit.HitObjectHandle.Actor:Get() end)
     if not valid(o) then
@@ -245,6 +265,7 @@ local function sheltered(actor)
         local blocked, o = trace_up(ksl, actor, pt[1], pt[2], mid, top + limit, true)
         if blocked == true and o and LIB.address(o) == LIB.address(actor) then blocked = nil end  -- ignore list not honoured
         if blocked == true and o and (fname(o) or ""):find("^Landscape") then blocked = nil end   -- the ground, not a roof
+        if blocked == true and o and (fname(o) or ""):find("Character") then blocked = nil end     -- the player, not a roof
         if blocked == nil then
             blocked, o = trace_up(ksl, actor, pt[1], pt[2], top + 15, top + 15 + limit, false)
             if blocked == true and o and (fname(o) or ""):find("^Landscape") then blocked = false end
@@ -290,8 +311,42 @@ end
 -- Sheltered parts whose own material has snow in vanilla (the stove: snow
 -- inside the base before this mod, user 2026-10-18) get coverage 0. A shared
 -- material gets a copy for this one part first, so nothing else changes.
-local cleared_logged = 0
+local cleared_logged, unknown_logged = 0, 0
+local function describe_snowless(actor)
+    if unknown_logged >= 8 then return end
+    unknown_logged = unknown_logged + 1
+    local parts = {}
+    for _, c in ipairs(part_meshes(actor)) do
+        local n = tonumber(call(c, "GetNumMaterials")) or 0
+        for i = 0, n - 1 do
+            local mat = call(c, "GetMaterial", i)
+            if valid(mat) then
+                local chain, m = {}, mat
+                for _ = 1, 6 do
+                    chain[#chain + 1] = fname(m)
+                    local pm = get(m, "Parent")
+                    if not valid(pm) then break end
+                    m = pm
+                end
+                local snowy = {}
+                local src = collect(mat)
+                for k, v in pairs(src.scalar) do
+                    local l = k:lower()
+                    if l:find("snow") or l:find("frost") or l:find("ice") or l:find("frozen") then
+                        snowy[#snowy + 1] = string.format("%s=%.2f", k, tonumber(v) or 0)
+                    end
+                end
+                parts[#parts + 1] = string.format("%s[%d]: %s {%s} switches: %s", fname(c), i, table.concat(chain, " < "),
+                    table.concat(snowy, ", "), switches(mat))
+            end
+        end
+    end
+    log(string.format("under a roof, no snow switch found on %s (%s): %s", fname(actor), fname(call(actor, "GetClass")) or "?",
+        #parts > 0 and table.concat(parts, " | ") or "no mesh components"))
+end
+
 local function clear_snow(actor)
+    local before = stats.cleared
     for _, c in ipairs(part_meshes(actor)) do
         local n = tonumber(call(c, "GetNumMaterials")) or 0
         for i = 0, n - 1 do
@@ -311,6 +366,10 @@ local function clear_snow(actor)
             end
         end
     end
+    local cls = (fname(call(actor, "GetClass")) or ""):lower()
+    if stats.cleared == before and (cls:find("stove") or cls:find("torch") or cls:find("fire") or cls:find("brazier")) then
+        describe_snowless(actor)
+    end
 end
 
 local function snow_part(actor)
@@ -328,7 +387,7 @@ local function snow_part(actor)
             local mat = call(c, "GetMaterial", i)
             if valid(mat) and not cname:find("^Arrow") then
                 local cn = fname(call(mat, "GetClass")) or ""
-                if cn == "MaterialInstanceDynamic" then
+                if cn == "MaterialInstanceDynamic" and (in_chain(mat, "MMI_BuildPart_VT") or snow_switch(mat)) then
                     mat = snow_material(c, i, mat, parent)
                     for _, p in ipairs(PARAMS) do
                         call(mat, "SetScalarParameterValue", FName(p[1]), p[2])
@@ -368,6 +427,14 @@ game_loop(1000, function()
             rescan_at = os.clock() + 30
             for _, a in ipairs(try(function() return FindAllOf("BuildPartBase") end) or {}) do
                 local pth = valid(a) and not fname(a):find("^Default__") and LIB.path_of(a)
+                if pth and not done[pth] and #queue < 2000 then queue[#queue + 1] = pth end
+            end
+            -- Stoves and torches (snow on them indoors is a vanilla bug,
+            -- user 2026-10-18) may not be built parts: anything with a fuel
+            -- component is checked too.
+            for _, comp in ipairs(try(function() return FindAllOf("FueledStationComponent") end) or {}) do
+                local a = valid(comp) and not fname(comp):find("^Default__") and call(comp, "GetOwner")
+                local pth = valid(a) and LIB.path_of(a)
                 if pth and not done[pth] and #queue < 2000 then queue[#queue + 1] = pth end
             end
         end
