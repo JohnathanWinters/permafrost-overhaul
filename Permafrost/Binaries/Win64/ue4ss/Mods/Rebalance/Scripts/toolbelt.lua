@@ -29,7 +29,7 @@ local DEFAULTS = {
     { "anyKnifeTier",    1, 0, "1 = any knife opens what needs a knife; a lower tier costs durability" },
     { "knifeBaseCost",   0, 0, "durability % an under-tier knife uses per opening" },
     { "knifeCostPerTier", 0, 0, "extra durability % per tier step the knife is below the requirement" },
-    { "hotbarUnlockSeconds", 2, 0, "holding the interact key this long opens a knife lock with a knife in the hotbar" },
+    { "hotbarUnlockSeconds", 1, 0, "holding the interact key this long opens a knife lock with a knife in the hotbar" },
 }
 local function load_config()
     local cfg = {}

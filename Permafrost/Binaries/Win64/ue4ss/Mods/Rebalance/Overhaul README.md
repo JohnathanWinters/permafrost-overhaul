@@ -42,7 +42,10 @@ Most containers have already been picked clean. The rare untouched one holds wha
 | Dead bodies | 20% | a few items |
 | Safes | 25% | cash, tripled |
 
-Only containers you have not opened yet change. Edit the `Containers` list to change chances and hauls.
+Only containers you have not opened yet change. A container that is still locked has never been looted, so it always holds its full haul. Edit the `Containers` list to change chances and hauls.
+
+### locks
+- A box you unlock stays unlocked after a reload. (The game itself locks it again.)
 
 ### enemydrops
 - Armed hostiles drop the gun they carried, worn to 10 to 50%.

@@ -8,6 +8,7 @@ return {
     Modules = {
         loot                       = 1     , -- Scripts/loot.lua             loot tables: trash, carcasses, bodies, resources; food scarcity
         containers                 = 1     , -- Scripts/containers.lua       containers mostly looted, rare untouched ones well stocked
+        locks                      = 1     , -- Scripts/locks.lua            unlocked boxes stay unlocked after a reload
         enemydrops                 = 1     , -- Scripts/enemydrops.lua       enemies drop the gun they carried and cloth
         encounters                 = 1     , -- Scripts/encounters.lua       fewer hostile random encounters, slower scripted camps
         spawndistance              = 1     , -- Scripts/spawndistance.lua    spawns farther away, no spawns within 100 m
@@ -214,7 +215,7 @@ return {
         anyKnifeTier               = 1     , -- vanilla 0     1 = any knife opens what needs a knife; a lower tier costs durability
         knifeBaseCost              = 0     , -- vanilla -     durability % an under-tier knife uses per opening
         knifeCostPerTier           = 0     , -- vanilla -     extra durability % per tier step the knife is short (refined counts as a step)
-        hotbarUnlockSeconds        = 2     , -- vanilla -     hold the interact key this long to open a knife lock with a knife in your hotbar (knife durability not used)
+        hotbarUnlockSeconds        = 1     , -- vanilla -     hold the interact key this long to open a knife lock with a knife in your hotbar (knife durability not used)
     },
 
     -- CONTAINERS: most are already looted (empty); the odd untouched one is full.

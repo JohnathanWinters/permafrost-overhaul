@@ -352,7 +352,7 @@ function REBALANCE_ON_ASSET(class_name, fn)
     return true
 end
 
-local ORDER = { "loot", "containers", "enemydrops", "encounters", "spawndistance", "patrols", "humanai",
+local ORDER = { "loot", "containers", "locks", "enemydrops", "encounters", "spawndistance", "patrols", "humanai",
                 "harderhunting", "betterguns", "flashlight", "togglemovement", "eternaltorches", "craftfromstorage",
                 "survivaltweaks", "toolbelt", "recipes", "food", "hud", "f8log" }
 
