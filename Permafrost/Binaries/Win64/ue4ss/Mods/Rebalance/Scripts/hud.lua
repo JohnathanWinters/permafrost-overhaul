@@ -30,7 +30,7 @@ local DEFAULTS = {
     { "enabled",           1,    "1 = on" },
     { "lowStatPercent",    25,   "health area shows while any of its bars is below this %" },
     { "hotbarShowSeconds", 2,    "hotbar shows this long after a hotbar key" },
-    { "questShowSeconds",  30,   "quest box shows this long after it changes" },
+    { "questShowSeconds",  12,   "quest box shows this long after it changes" },
     { "weaponShowSeconds", 2,    "selected weapon box shows this long after you switch items" },
     { "fadeSeconds",       0.25, "fade in/out time" },
     { "debugLog",          1,    "1 = log the HUD parts found and dump the tree" },
@@ -264,6 +264,7 @@ local HOTBAR_KEYS = { "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Ei
 local hotbar_structs = nil
 local hotbar_until, quest_until, weapon_until = 0, 0, 0
 local quest_sig = nil
+local was_menu = false   -- a menu was open on the last check
 local held_addr = false   -- address of the item in your hands (nil = empty; false = not read yet)
 
 local helpers_mod = nil
@@ -337,7 +338,14 @@ local function decide(hud)
     -- Inventory open: everything shown (the toolbelt slots appear there too).
     if menu_open(pc) then
         for k in pairs(targets) do targets[k] = 1 end
+        was_menu = true
         return
+    end
+    -- Menu just closed: the quest box gets its full time again (it hid at
+    -- once when its time ran out while the inventory was open, 2026-10-18).
+    if was_menu then
+        was_menu = false
+        quest_until = now + CFG.questShowSeconds
     end
     -- Quest box (every 0.5 s): its text changed -> shown for questShowSeconds.
     if ticks % 5 == 0 and #routes.quest > 0 then

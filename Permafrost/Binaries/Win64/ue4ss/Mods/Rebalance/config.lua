@@ -232,7 +232,7 @@ return {
     HUD = {
         lowStatPercent               = 25    , -- vanilla -     health area shows while any of its bars is below this %
         hotbarShowSeconds            = 2     , -- vanilla -     hotbar shows this long after a hotbar key
-        questShowSeconds             = 30    , -- vanilla -     quest box shows this long after it changes
+        questShowSeconds             = 12    , -- vanilla -     quest box shows this long after it changes or after you close a menu
         weaponShowSeconds            = 2     , -- vanilla -     selected weapon box shows this long after you switch items (hidden with empty hands)
         fadeSeconds                  = 0.25  , -- vanilla -     fade time
         debugLog                     = 1     , -- vanilla -     1 = log the HUD parts found (dlls\hud_tree.txt)
