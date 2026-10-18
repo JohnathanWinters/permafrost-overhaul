@@ -505,6 +505,7 @@ void read_spawnblock();  // spawn blocker, below
 void read_combat();      // headshots, below
 void read_toolbelt();    // toolbelt, below
 void read_reverb();      // hall reverb, below
+void install_reverb();
 void read_survival();    // survival rates, below
 
 void tick() {
@@ -516,6 +517,7 @@ void tick() {
     read_spawnblock();
     read_combat();
     read_toolbelt();
+    install_reverb();
     read_reverb();
     read_survival();
     if (g_patched_count.load() > 0 && now >= g_next_stats) {
@@ -1071,14 +1073,17 @@ FmodResult studio_update_hook(void* sys) {
     return g_studio_update(sys);
 }
 
+// The game loads the FMOD dlls (delay-loaded) after main.dll starts, so this
+// is retried from tick() until they are there (2026-10-18: the first version
+// ran once at startup and always found them missing).
+int g_reverb_state = 0;  // 0 = waiting for FMOD, 1 = hooked, 2 = gave up
 void install_reverb() {
-    InitializeCriticalSection(&g_rev_lock);
+    if (g_reverb_state != 0) return;
     static const char kUpdate[] = "?update@System@Studio@FMOD@@QEAA?AW4FMOD_RESULT@@XZ";
     g_fmod = GetModuleHandleW(L"fmod.dll");
     g_fmod_studio = GetModuleHandleW(L"fmodstudio.dll");
-    if (!g_fmod) g_fmod = LoadLibraryW(L"fmod.dll");
-    if (!g_fmod_studio) g_fmod_studio = LoadLibraryW(L"fmodstudio.dll");
-    if (!g_fmod || !g_fmod_studio) { logf(L"hall reverb OFF: FMOD dlls not loaded"); return; }
+    if (!g_fmod || !g_fmod_studio) return;  // not loaded yet
+    g_reverb_state = 2;  // any early return below is final
     auto real = reinterpret_cast<StudioUpdateFn>(GetProcAddress(g_fmod_studio, kUpdate));
     if (!real) { logf(L"hall reverb OFF: Studio update export missing"); return; }
     auto base = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
@@ -1100,6 +1105,7 @@ void install_reverb() {
             slots[i] = reinterpret_cast<uint64_t>(&studio_update_hook);
             VirtualProtect(&slots[i], 8, old, &old);
             logf(L"hall reverb: hooked FMOD Studio update (delay-import slot %d)", i);
+            g_reverb_state = 1;
             return;
         }
     }
@@ -1541,6 +1547,7 @@ extern "C" __declspec(dllexport) Mod* start_mod() {
     DeleteFileW((g_dir + L"toolbelt.txt").c_str());
     install_toolbelt();
     DeleteFileW((g_dir + L"reverb.txt").c_str());
+    InitializeCriticalSection(&g_rev_lock);
     install_reverb();
     DeleteFileW((g_dir + L"survival.txt").c_str());  // last session's addresses
     return new Mod();

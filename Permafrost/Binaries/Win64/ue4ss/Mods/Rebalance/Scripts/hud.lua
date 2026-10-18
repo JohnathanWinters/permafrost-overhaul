@@ -1,16 +1,22 @@
 -- HUD module of the Overhaul (2026-10-18). User: every HUD element is always
 -- on. Wanted:
---  * health area (health + the other stat bars next to it): only while one
---    of them is below lowStatPercent;
+--  * health area: only while one of its bars is below lowStatPercent;
 --  * hotbar: only for hotbarShowSeconds after a hotbar key is pressed;
 --  * quest box on the left: fades out questShowSeconds after it changes;
+--  * selected weapon box: hidden while your hands are empty, shown for
+--    weaponShowSeconds after you switch to an item;
 --  * compass: untouched.
 -- Fades are SetRenderOpacity steps (fadeSeconds, quick but smooth).
--- The game's HUD is the UW_HUD widget. Its parts are found by widget name
--- (HEALTH_NAMES etc. below) on each new HUD; every part found and the whole
--- tree (dlls\hud_tree.txt) are logged, so the patterns can be corrected.
--- Also logs which widgets open with menus (inventory etc.), for the planned
--- hover item info.
+--
+-- The game's HUD is the UW_HUD widget; the always-on part is Canvas_BaseHUD
+-- (menus live in Canvas_Toggleable and are never touched). PARTS names the
+-- widgets of each group, from the HUD tree dumped on 2026-10-18
+-- (dlls\hud_tree.txt, still written once per session). Each part is
+-- remembered as its route of child indexes from Canvas_BaseHUD and looked up
+-- fresh through that route when needed: cheap, and no widget reference is
+-- kept across frames. (The first version found widgets by listing every
+-- widget of their class, up to 20 times a second: 0.6 s of work per 15 s and
+-- 30 ms stutters.)
 -- Settings: HUD section of config.lua. Log tag [PF HUD].
 local TAG = "[PF HUD] "
 local function log(msg) print(TAG .. tostring(msg) .. "\n") end
@@ -25,6 +31,7 @@ local DEFAULTS = {
     { "lowStatPercent",    25,   "health area shows while any of its bars is below this %" },
     { "hotbarShowSeconds", 2,    "hotbar shows this long after a hotbar key" },
     { "questShowSeconds",  5,    "quest box shows this long after it changes" },
+    { "weaponShowSeconds", 2,    "selected weapon box shows this long after you switch items" },
     { "fadeSeconds",       0.25, "fade in/out time" },
     { "debugLog",          1,    "1 = log the HUD parts found and dump the tree" },
 }
@@ -51,137 +58,146 @@ if CFG.enabled ~= 1 then
     return
 end
 
--- Name patterns (lowercase, plain find) for each group. First match wins per
--- widget; its children are then not searched.
-local GROUPS = {
-    { key = "health", words = { "statstatus", "stats", "healthbar", "health", "survivalstat", "vitals" } },
-    { key = "hotbar", words = { "hotbar", "quickslot", "quickbar", "toolbelt", "beltslot" } },
-    { key = "quest",  words = { "questtracker", "quest", "objective", "journaltrack", "tracker" } },
+-- Widget name -> group. Exact names; the quick-slot hints are matched by
+-- prefix because the game numbers some of them.
+local PARTS = {
+    VerticalBox_StatusPanel = "health",
+    UW_HeldItemIndicator = "weapon",
+    InvalidationBox_Quests = "quest",
 }
-local SKIP_WORDS = { "compass" }
+local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" } }
+-- Never walked into: the compass and its markers, the crosshairs.
+local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true }
 
 ------------------------------------------------------------------ widget tree
-local function children(w)
-    local out = {}
-    local n = tonumber(call(w, "GetChildrenCount"))
-    if n and n > 0 then
-        for i = 0, n - 1 do
-            local c = call(w, "GetChildAt", i)
-            if valid(c) then out[#out + 1] = c end
-        end
+-- Children of a widget: panel slots first, then a nested UserWidget's root
+-- (route step 0 = that root, n >= 1 = GetChildAt(n - 1)).
+local function child(w, step)
+    if step == 0 then
+        local tree = get(w, "WidgetTree")
+        local root = valid(tree) and get(tree, "RootWidget")
+        return valid(root) and root or nil
     end
-    -- A nested UserWidget keeps its content in its own tree.
-    local tree = get(w, "WidgetTree")
-    local root = valid(tree) and get(tree, "RootWidget")
-    if valid(root) then out[#out + 1] = root end
-    return out
+    local c = call(w, "GetChildAt", step - 1)
+    return valid(c) and c or nil
 end
 
-local function cls_name(w)
-    return fname(call(w, "GetClass")) or "?"
+local function each_child(w, fn)
+    local n = tonumber(call(w, "GetChildrenCount")) or 0
+    for i = 1, n do
+        local c = child(w, i)
+        if c then fn(c, i) end
+    end
+    local r = child(w, 0)
+    if r then fn(r, 0) end
 end
 
-local function group_of(w)
-    local text = (fname(w) .. " " .. cls_name(w)):lower()
-    for _, s in ipairs(SKIP_WORDS) do if text:find(s, 1, true) then return "skip" end end
-    for _, g in ipairs(GROUPS) do
-        for _, word in ipairs(g.words) do
-            if text:find(word, 1, true) then return g.key end
-        end
+local function cls_name(w) return fname(call(w, "GetClass")) or "?" end
+
+local function group_of(name)
+    if PARTS[name] then return PARTS[name] end
+    for _, p in ipairs(PREFIXES) do
+        if name:sub(1, #p[1]) == p[1] then return p[2] end
     end
     return nil
 end
 
--- parts[key] = { paths of widgets }
-local parts = { health = {}, hotbar = {}, quest = {} }
+local function find_hud()
+    for _, h in ipairs(try(function() return FindAllOf("UW_HUD_C") end) or {}) do
+        if valid(h) and not fname(h):find("^Default__") and call(h, "IsInViewport") == true then return h end
+    end
+    return nil
+end
+
+-- Canvas_BaseHUD under the HUD: UW_HUD -> root (Canvas_Root) -> ... found
+-- by name within a few levels.
+local function find_base(hud)
+    local found = nil
+    local function rec(w, depth, route)
+        if found or depth > 4 then return end
+        if fname(w) == "Canvas_BaseHUD" then found = route return end
+        each_child(w, function(c, i)
+            local r = { table.unpack(route) }
+            r[#r + 1] = i
+            rec(c, depth + 1, r)
+        end)
+    end
+    rec(hud, 0, {})
+    return found
+end
+
+local function follow(w, route)
+    for _, step in ipairs(route) do
+        if not w then return nil end
+        w = child(w, step)
+    end
+    return w
+end
+
+-- routes[group] = { { route, name }, ... } relative to the HUD widget.
+local routes = { health = {}, hotbar = {}, quest = {}, weapon = {} }
+local bars = {}           -- routes of ProgressBars inside the health parts
+local quest_texts = {}    -- routes of TextBlocks inside the quest parts
 local hud_addr = nil
-local dump_lines = nil
-
-local function holds_skip(w, depth)
-    if depth > 0 and group_of(w) == "skip" then return true end
-    if depth > 12 then return false end
-    for _, c in ipairs(children(w)) do
-        if holds_skip(c, depth + 1) then return true end
-    end
-    return false
-end
-
-local function walk(w, depth)
-    if depth > 14 then return end
-    local g = group_of(w)
-    if dump_lines and #dump_lines < 600 then
-        dump_lines[#dump_lines + 1] = string.rep("  ", depth) .. fname(w) .. " (" .. cls_name(w) .. ")" .. (g and ("  <- " .. g) or "")
-    end
-    -- A match that holds the compass is too big a box: look inside instead.
-    if g and g ~= "skip" and holds_skip(w, 0) then g = nil end
-    if g and g ~= "skip" then
-        local list = parts[g]
-        list[#list + 1] = LIB.path_of(w)
-        if not dump_lines then return end   -- keep walking only while dumping
-    end
-    for _, c in ipairs(children(w)) do walk(c, depth + 1) end
-end
-
 local dumped = false
-local function scan_hud()
-    local huds = try(function() return FindAllOf("UW_HUD_C") end) or {}
-    for _, h in ipairs(huds) do
-        if valid(h) and not fname(h):find("^Default__") and call(h, "IsInViewport") == true then
-            local a = LIB.address(h)
-            if a == hud_addr then return true end
-            hud_addr = a
-            parts = { health = {}, hotbar = {}, quest = {} }
-            dump_lines = (CFG.debugLog == 1 and not dumped) and {} or nil
-            walk(h, 0)
-            if dump_lines then
-                dumped = true
-                local f = io.open(ROOT .. "dlls\\hud_tree.txt", "w")
-                if f then f:write(table.concat(dump_lines, "\n") .. "\n") f:close() end
-                log("HUD tree written to dlls\\hud_tree.txt (" .. #dump_lines .. " widgets)")
-                dump_lines = nil
-            end
-            for k, list in pairs(parts) do
-                local names = {}
-                for _, p in ipairs(list) do names[#names + 1] = p:match("[%.:]([^%.:]+)$") or p end
-                log(string.format("%s: %d part(s) %s", k, #list, table.concat(names, ", ")))
-            end
-            return true
+
+local function scan(hud)
+    local base = find_base(hud)
+    if not base then return false end
+    routes = { health = {}, hotbar = {}, quest = {}, weapon = {} }
+    bars, quest_texts = {}, {}
+    local dump = (CFG.debugLog == 1 and not dumped) and {} or nil
+    local function inner(w, depth, route, out, kind)
+        if depth > 10 or #out > 40 then return end
+        if cls_name(w):find(kind) then out[#out + 1] = route end
+        each_child(w, function(c, i)
+            local r = { table.unpack(route) }
+            r[#r + 1] = i
+            inner(c, depth + 1, r, out, kind)
+        end)
+    end
+    local function rec(w, depth, route)
+        if depth > 12 then return end
+        local name = fname(w)
+        local g = group_of(name)
+        if dump and #dump < 400 then
+            dump[#dump + 1] = string.rep("  ", depth) .. name .. " (" .. cls_name(w) .. ")" .. (g and ("  <- " .. g) or "")
         end
+        if g then
+            local list = routes[g]
+            list[#list + 1] = { route = route, name = name }
+            if g == "health" then inner(w, 0, route, bars, "ProgressBar") end
+            if g == "quest" then inner(w, 0, route, quest_texts, "TextBlock") end
+            return
+        end
+        if NO_WALK[name] then return end
+        each_child(w, function(c, i)
+            local r = { table.unpack(route) }
+            r[#r + 1] = i
+            rec(c, depth + 1, r)
+        end)
     end
-    return false
-end
-
------------------------------------------------------------------- visibility rules
-local function each_part(key, fn)
-    for _, p in ipairs(parts[key]) do
-        local w = LIB.resolve(p)
-        if w then fn(w) end
+    rec(follow(hud, base), 0, base)
+    if dump then
+        dumped = true
+        local f = io.open(ROOT .. "dlls\\hud_tree.txt", "w")
+        if f then f:write(table.concat(dump, "\n") .. "\n") f:close() end
     end
+    for k, list in pairs(routes) do
+        local names = {}
+        for _, e in ipairs(list) do names[#names + 1] = e.name end
+        log(string.format("%s: %s", k, #names > 0 and table.concat(names, ", ") or "not found"))
+    end
+    log(string.format("health bars: %d, quest texts: %d", #bars, #quest_texts))
+    return true
 end
 
--- Lowest ProgressBar fill (0..1) under the health parts.
-local function lowest_bar(w, depth, best)
-    if depth > 8 then return best end
-    local pct = tonumber(get(w, "Percent"))
-    if pct and cls_name(w):find("ProgressBar") then best = math.min(best, pct) end
-    for _, c in ipairs(children(w)) do best = lowest_bar(c, depth + 1, best) end
-    return best
-end
-
+------------------------------------------------------------------ rules
 local HOTBAR_KEYS = { "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }
 local hotbar_structs = nil
-local hotbar_until, quest_until = 0, 0
+local hotbar_until, quest_until, weapon_until = 0, 0, 0
 local quest_sig = nil
-
-local function texts(w, depth, out)
-    if depth > 8 or #out > 20 then return out end
-    if cls_name(w):find("TextBlock") then
-        local t = try(function() return w:GetText():ToString() end)
-        if t and t ~= "" then out[#out + 1] = t end
-    end
-    for _, c in ipairs(children(w)) do texts(c, depth + 1, out) end
-    return out
-end
+local held_addr = false   -- address of the item in your hands (nil = empty; false = not read yet)
 
 local helpers_mod = nil
 local function player_pc()
@@ -190,21 +206,43 @@ local function player_pc()
     return valid(pc) and pc or nil
 end
 
-local targets = { health = 1, hotbar = 1, quest = 1 }
-local opacity = { health = 1, hotbar = 1, quest = 1 }
+-- The item actor in the player's hands, or nil (same path BetterGuns uses).
+local equip_name = nil
+local function held_item(pc)
+    local pawn = pc and get(pc, "Pawn")
+    if not valid(pawn) then return nil end
+    local equip = equip_name and get(pawn, equip_name)
+    if not valid(equip) then
+        for _, n in ipairs({ "Equipment Component", "EquipmentComponent" }) do
+            equip = get(pawn, n)
+            if valid(equip) then equip_name = n break end
+        end
+    end
+    if not valid(equip) then return nil end
+    local item = try(function() return equip.HeldItem.ItemActor end)
+    return valid(item) and item or nil
+end
+
+local targets = { health = 1, hotbar = 1, quest = 1, weapon = 1 }
+local opacity = { health = 1, hotbar = 1, quest = 1, weapon = 1 }
 local ticks = 0
-local function decide()
+local function decide(hud)
     local now = os.clock()
     ticks = ticks + 1
-    -- Health area: lowest bar every 0.5 s.
-    if ticks % 10 == 0 and #parts.health > 0 then
-        local low = 1
-        each_part("health", function(w) low = lowest_bar(w, 0, low) end)
-        targets.health = (low * 100 < CFG.lowStatPercent) and 1 or 0
+    -- Health area (every 0.5 s): shown while a bar is low. No bars found:
+    -- it stays shown (it may hold the game's own warning icons).
+    if ticks % 5 == 0 and #routes.health > 0 then
+        local low = nil
+        for _, r in ipairs(bars) do
+            local b = follow(hud, r)
+            local pct = b and tonumber(get(b, "Percent"))
+            if pct then low = math.min(low or 1, pct) end
+        end
+        targets.health = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
     end
-    -- Hotbar: any number key.
     local pc = player_pc()
-    if pc and #parts.hotbar > 0 then
+    -- Hotbar: any number key.
+    if pc and #routes.hotbar > 0 then
         if not hotbar_structs then
             hotbar_structs = {}
             for _, k in ipairs(HOTBAR_KEYS) do hotbar_structs[#hotbar_structs + 1] = { KeyName = FName(k) } end
@@ -214,10 +252,25 @@ local function decide()
         end
         targets.hotbar = now < hotbar_until and 1 or 0
     end
-    -- Quest box: its text changed -> show for questShowSeconds.
-    if ticks % 10 == 0 and #parts.quest > 0 then
+    -- Weapon box (every 0.2 s): a new item in your hands -> shown for
+    -- weaponShowSeconds; hands empty -> hidden.
+    if ticks % 2 == 0 and #routes.weapon > 0 then
+        local item = held_item(pc)
+        local addr = item and LIB.address(item) or nil
+        if addr ~= held_addr then
+            if addr and held_addr ~= false then weapon_until = now + CFG.weaponShowSeconds end
+            held_addr = addr
+        end
+        targets.weapon = (addr and now < weapon_until) and 1 or 0
+    end
+    -- Quest box (every 0.5 s): its text changed -> shown for questShowSeconds.
+    if ticks % 5 == 0 and #routes.quest > 0 then
         local all = {}
-        each_part("quest", function(w) texts(w, 0, all) end)
+        for _, r in ipairs(quest_texts) do
+            local w = follow(hud, r)
+            local t = w and try(function() return w:GetText():ToString() end)
+            if t and t ~= "" then all[#all + 1] = t end
+        end
         local sig = table.concat(all, "|")
         if sig ~= quest_sig then
             if quest_sig ~= nil then quest_until = now + CFG.questShowSeconds end
@@ -228,7 +281,14 @@ local function decide()
 end
 
 local STEP_MS = 50
-local function fade()
+local function fading()
+    for key, target in pairs(targets) do
+        if opacity[key] ~= target then return true end
+    end
+    return false
+end
+
+local function fade(hud)
     local step = CFG.fadeSeconds > 0 and (STEP_MS / 1000) / CFG.fadeSeconds or 1
     for key, target in pairs(targets) do
         local o = opacity[key]
@@ -237,21 +297,27 @@ local function fade()
             -- Smoothstep so the start and end of each fade are soft.
             local shown = o * o * (3 - 2 * o)
             opacity[key] = o
-            each_part(key, function(w) call(w, "SetRenderOpacity", shown) end)
+            for _, e in ipairs(routes[key]) do
+                local w = follow(hud, e.route)
+                if w then call(w, "SetRenderOpacity", shown) end
+            end
         end
     end
 end
 
 ------------------------------------------------------------------ menus (hover info prep)
-local seen_widgets, seen_logged = {}, 0
-local function log_menus()
-    if CFG.debugLog ~= 1 or seen_logged >= 60 then return end
+-- Which top-level screens open (inventory etc.), for the planned hover item
+-- info. FindAllOf("UserWidget") is heavy: every 10 s, first 5 minutes only.
+local seen_widgets, menu_runs, menu_at = {}, 0, 0
+local function log_menus(now)
+    if CFG.debugLog ~= 1 or menu_runs >= 30 or now < menu_at then return end
+    menu_at = now + 10
+    menu_runs = menu_runs + 1
     for _, w in ipairs(try(function() return FindAllOf("UserWidget") end) or {}) do
         if valid(w) and call(w, "IsInViewport") == true then
             local c = cls_name(w)
             if not seen_widgets[c] then
                 seen_widgets[c] = true
-                seen_logged = seen_logged + 1
                 log("screen widget: " .. c)
             end
         end
@@ -259,21 +325,32 @@ local function log_menus()
 end
 
 ------------------------------------------------------------------ loop
-local scan_at = 0
+-- Rules every 100 ms; fade steps every 50 ms only while something fades.
+local scan_at, errors, odd = 0, 0, false
 game_loop(STEP_MS, function()
     local ok, err = pcall(function()
+        odd = not odd
+        local busy = fading()
+        if odd and not busy then return end
         local now = os.clock()
-        if now >= scan_at then
+        local hud = find_hud()
+        if not hud then hud_addr = nil return end
+        local a = LIB.address(hud)
+        if a ~= hud_addr or now >= scan_at then
+            if a ~= hud_addr then
+                if not scan(hud) then return end
+                hud_addr = a
+                -- A new HUD starts fully shown.
+                for k in pairs(opacity) do opacity[k] = 1 end
+            end
             scan_at = now + 3
-            if not scan_hud() then return end
-            log_menus()
+            log_menus(now)
         end
-        if not hud_addr then return end
-        decide()
-        fade()
+        if not odd then decide(hud) end
+        fade(hud)
     end)
-    if not ok and seen_logged < 60 then seen_logged = seen_logged + 1 log("error: " .. tostring(err)) end
+    if not ok and errors < 10 then errors = errors + 1 log("error: " .. tostring(err)) end
 end)
 
-log(string.format("loaded: health area below %d%%, hotbar %d s after a key, quest %d s after a change",
-    CFG.lowStatPercent, CFG.hotbarShowSeconds, CFG.questShowSeconds))
+log(string.format("loaded: health area below %d%%, hotbar %d s after a key, weapon box %d s after a switch, quest %d s after a change",
+    CFG.lowStatPercent, CFG.hotbarShowSeconds, CFG.weaponShowSeconds, CFG.questShowSeconds))

@@ -4,8 +4,7 @@
 -- (shared lootdata library), not the Loot module.
 -- Settings: Enemies section of config.lua. Log tag [PF EnemyDrops].
 local TAG = "[PF EnemyDrops] "
-local function log(msg) print(TAG .. tostring(msg) .. "
-") end
+local function log(msg) print(TAG .. tostring(msg) .. "\n") end
 local LIB = REBALANCE_LIB
 local try, valid, fname, full, resolve, game_loop, game_later = LIB.try, LIB.valid, LIB.fname, LIB.full, LIB.resolve, LIB.game_loop, LIB.game_later
 local ROOT = REBALANCE_ROOT or ""
