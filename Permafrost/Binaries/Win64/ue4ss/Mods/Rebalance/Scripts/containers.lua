@@ -94,10 +94,23 @@ end
 -- (user 2026-10-18): it is always untouched. Once opened it is decided and
 -- never touched again, so it stays empty after you take the loot.
 local padlock_class = nil
+-- Its own padlock, or a locked padlock on another actor within 1.5 m (some
+-- boxes keep the lock on a separate actor next to the container).
 local function is_locked(a)
     padlock_class = padlock_class or try(function() return StaticFindObject("/Script/Permafrost.Padlock") end)
     local lock = valid(padlock_class) and try(function() return a:GetComponentByClass(padlock_class) end)
-    return valid(lock) and try(function() return lock.bLocked end) == true
+    if valid(lock) then return try(function() return lock.bLocked end) == true end
+    local l = LIB.call(a, "K2_GetActorLocation")
+    if not l then return false end
+    local x, y, z = l.X, l.Y, l.Z
+    for _, pl in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
+        if valid(pl) and LIB.get(pl, "bLocked") == true then
+            local o = LIB.call(pl, "GetOwner")
+            local ol = valid(o) and LIB.call(o, "K2_GetActorLocation")
+            if ol and (ol.X - x) ^ 2 + (ol.Y - y) ^ 2 + (ol.Z - z) ^ 2 < 150 * 150 then return true end
+        end
+    end
+    return false
 end
 
 local function process_container(a, was_locked)

@@ -71,7 +71,7 @@ local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar
 -- own Blueprint class on each pass (a handful of objects, cheap), keeping
 -- only those inside the HUD and not inside a menu (their object path names
 -- every owning widget).
-local CLASS_PARTS = { health = "UW_CharStatusPanel_C", hotbar = "UW_QuickSlot_C" }
+local CLASS_PARTS = { health = { "UW_CharStatusPanel_C", "BP_Widget_StatStatus_C" }, hotbar = { "UW_QuickSlot_C" } }
 local MENU_WORDS = { "Menu", "Ledger", "Inventory", "Trading", "Crafting", "Container", "Storage" }
 -- Never walked into: the compass and its markers, the crosshairs.
 local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true }
@@ -225,11 +225,11 @@ end
 -- class_widgets[key] = this pass's widgets of CLASS_PARTS[key] (never kept
 -- past the pass).
 local function class_widgets(key)
-    local cls = CLASS_PARTS[key]
-    if not cls then return {} end
     local out = {}
-    for _, w in ipairs(try(function() return FindAllOf(cls) end) or {}) do
-        if valid(w) and not fname(w):find("^Default__") and in_hud(w) then out[#out + 1] = w end
+    for _, cls in ipairs(CLASS_PARTS[key] or {}) do
+        for _, w in ipairs(try(function() return FindAllOf(cls) end) or {}) do
+            if valid(w) and not fname(w):find("^Default__") and in_hud(w) then out[#out + 1] = w end
+        end
     end
     return out
 end
@@ -238,7 +238,7 @@ local class_logged = {}
 local function note_class(key, list)
     if CFG.debugLog == 1 and #list > 0 and not class_logged[key] then
         class_logged[key] = true
-        log(string.format("%s: %d %s in the HUD", key, #list, CLASS_PARTS[key]))
+        log(string.format("%s: %d widget(s) in the HUD (%s)", key, #list, table.concat(CLASS_PARTS[key], ", ")))
     end
 end
 
@@ -251,6 +251,42 @@ local function lowest_in(w, depth, best)
     end
     each_child(w, function(c) best = lowest_in(c, depth + 1, best) end)
     return best
+end
+
+-- One-time census (debugLog 1), 15 s after the HUD appears: every
+-- UserWidget whose parent chain reaches Canvas_BaseHUD, by class, with the
+-- chain of its first instance. Written to dlls\hud_census.txt so the
+-- health and hotbar classes can be pinned down.
+local census_at, census_done = nil, false
+local function chain_of(w)
+    local names = {}
+    for _ = 1, 40 do
+        names[#names + 1] = fname(w)
+        local p = call(w, "GetParent")
+        if not valid(p) then
+            local outer = call(w, "GetOuter")
+            if valid(outer) and fname(outer) == "WidgetTree" then p = call(outer, "GetOuter") end
+        end
+        if not valid(p) then break end
+        w = p
+    end
+    return table.concat(names, " < ")
+end
+local function census()
+    local by_class, first = {}, {}
+    for _, w in ipairs(try(function() return FindAllOf("UserWidget") end) or {}) do
+        if valid(w) and not fname(w):find("^Default__") and in_hud(w) then
+            local c = cls_name(w)
+            by_class[c] = (by_class[c] or 0) + 1
+            first[c] = first[c] or chain_of(w)
+        end
+    end
+    local lines = {}
+    for c, n in pairs(by_class) do lines[#lines + 1] = string.format("%-40s x%-3d %s", c, n, first[c]) end
+    table.sort(lines)
+    local f = io.open(ROOT .. "dlls\\hud_census.txt", "w")
+    if f then f:write(table.concat(lines, "\n") .. "\n") f:close() end
+    log(string.format("HUD census: %d widget types on the HUD -> dlls\\hud_census.txt", #lines))
 end
 
 ------------------------------------------------------------------ rules
@@ -412,6 +448,10 @@ game_loop(STEP_MS, function()
             end
             scan_at = now + 3
             log_menus(now)
+        end
+        if CFG.debugLog == 1 and not census_done then
+            census_at = census_at or (now + 15)
+            if now >= census_at then census_done = true pcall(census) end
         end
         if not odd then decide(hud) end
         fade(hud)

@@ -108,17 +108,35 @@ local function fix_heater_repair(chem)
     local map = dc and get(dc, "RepairCost")
     if not map then return end
     repair_done = true
-    local old = {}
-    try(function() map:ForEach(function(k, v) old[#old + 1] = item_name(k:get()) .. " x" .. tostring(v:get()) end) end)
-    local ok = try(function()
-        map:Empty()
-        map:Add(chem, CFG.heaterRepairChemicals)
-        return true
+    -- Vanilla already repairs it with chemicals (log 2026-10-18): leave it.
+    -- Otherwise add chemicals first and drop the other entries only once the
+    -- add is confirmed (an earlier version emptied the map, then the add
+    -- failed and repairs became free).
+    local old, has_chem = {}, false
+    try(function()
+        map:ForEach(function(k)
+            local n = item_name(k:get())
+            old[#old + 1] = n:match("[%.]([^%.]+)$") or n
+            if n:find("Chemicals") then has_chem = true end
+        end)
     end)
-    local now = {}
-    try(function() map:ForEach(function(k, v) now[#now + 1] = item_name(k:get()) .. " x" .. tostring(v:get()) end) end)
-    log(string.format("Makeshift Heater repair: [%s] -> [%s]%s", table.concat(old, ", "), table.concat(now, ", "),
-        ok and "" or " (FAILED: map not editable from Lua)"))
+    if has_chem then
+        log("Makeshift Heater already repairs with chemicals (vanilla): unchanged")
+        return
+    end
+    local added = try(function() map:Add(chem, CFG.heaterRepairChemicals); return true end)
+    local now_has = false
+    try(function() map:ForEach(function(k) if item_name(k:get()):find("Chemicals") then now_has = true end end) end)
+    if not (added and now_has) then
+        log("Makeshift Heater repair: could not add chemicals from Lua; vanilla repair cost kept ("
+            .. table.concat(old, ", ") .. ")")
+        return
+    end
+    -- Chemicals are in: remove everything else.
+    local others = {}
+    try(function() map:ForEach(function(k) if not item_name(k:get()):find("Chemicals") then others[#others + 1] = k:get() end end) end)
+    for _, k in ipairs(others) do try(function() map:Remove(k) end) end
+    log("Makeshift Heater repair: [" .. table.concat(old, ", ") .. "] -> chemicals only")
 end
 
 
