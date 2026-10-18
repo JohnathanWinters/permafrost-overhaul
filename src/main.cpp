@@ -551,6 +551,7 @@ struct InHook {
 using SpawnCheckFn = bool (*)(void* spawner);
 SpawnCheckFn g_spawn_tramp = nullptr;
 std::atomic<long long> g_block_cm{0};
+std::atomic<long long> g_animal_cm{0};  // animal spawn point limit (animal spawn blocker below)
 std::atomic<long long> g_px{0}, g_py{0}, g_pz{0};
 std::atomic<bool> g_player_known{false};
 std::atomic<int> g_root_off{-1}, g_loc_off{-1};
@@ -702,6 +703,8 @@ void read_spawnblock() {
         pos = eol + 1;
         if (line.rfind("block=", 0) == 0) {
             g_block_cm.store(std::strtoll(line.c_str() + 6, nullptr, 10));
+        } else if (line.rfind("animal=", 0) == 0) {
+            g_animal_cm.store(std::strtoll(line.c_str() + 7, nullptr, 10));
         } else if (line.rfind("player=", 0) == 0) {
             long long x = 0, y = 0, z = 0;
             if (sscanf(line.c_str() + 7, "%lld,%lld,%lld", &x, &y, &z) == 3) {
@@ -778,6 +781,73 @@ void* detour15(uint8_t* target, void* hook) {
     VirtualProtect(target, 15, old, &old);
     FlushInstructionCache(GetCurrentProcess(), target, 15);
     return tramp;
+}
+
+// ---- animal spawn blocker -------------------------------------------------------------
+// Wolves spawned right next to the player (2026-10-18): animal spawn points
+// (and the other AActorSpawnerBase spawners) decide through
+// AActorSpawnerBase::CheckIfCanSpawn(Pawn, PlayerController, Narrative), when
+// they load in with the player already inside their range and when the
+// player walks into it. While the spawner is within the animal limit of the
+// player it is refused; spawndistance.lua spawns those points later through
+// the game's own SpawnAnimals once the player is farther away. Same player
+// position and actor layout as the spawner blocker above. 15 prologue bytes
+// patched in memory, signature-checked, fails closed.
+using CanSpawnFn = bool (*)(void* self, void* pawn, void* pc, void* narrative);
+CanSpawnFn g_can_spawn_tramp = nullptr;
+std::atomic<int> g_animal_blocked{0};
+thread_local int t_in_animal = 0;
+
+bool can_spawn_detour(void* self, void* pawn, void* pc, void* narrative) {
+    InHook in_hook(t_in_animal);
+    const long long cm = g_animal_cm.load(std::memory_order_relaxed);
+    const int ro = g_root_off.load(std::memory_order_acquire), lo = g_loc_off.load(std::memory_order_acquire);
+    if (self && cm > 0 && ro >= 0 && lo >= 0 && g_player_known.load(std::memory_order_acquire)) {
+        void* root = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(self) + ro);
+        if (root) {
+            const double* p = reinterpret_cast<const double*>(static_cast<const uint8_t*>(root) + lo);
+            const double dx = p[0] - static_cast<double>(g_px.load()), dy = p[1] - static_cast<double>(g_py.load()),
+                         dz = p[2] - static_cast<double>(g_pz.load());
+            const double d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < static_cast<double>(cm) * static_cast<double>(cm)) {
+                int n = g_animal_blocked.fetch_add(1) + 1;
+                if (n <= 25) logf(L"animal spawn blocked #%d: spawn point %.0f m from you (limit %lld m)", n, sqrt(d2) / 100.0, cm / 100);
+                return false;
+            }
+        }
+    }
+    return g_can_spawn_tramp(self, pawn, pc, narrative);
+}
+
+void install_animal_blocker() {
+    // mov [rsp+8],rbx; mov [rsp+10h],rsi; push rdi; sub rsp,20h;
+    // mov rbx,[rcx+2B8h]; mov rsi,r9; movsxd rax,dword [rcx+2C0h]
+    static const uint8_t sig[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20,
+                                  0x48, 0x8B, 0x99, 0xB8, 0x02, 0x00, 0x00, 0x49, 0x8B, 0xF1, 0x48, 0x63, 0x81, 0xC0, 0x02,
+                                  0x00, 0x00};
+    auto base = reinterpret_cast<uint8_t*>(GetModuleHandleW(nullptr));
+    auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+    auto sec = IMAGE_FIRST_SECTION(nt);
+    uint8_t* found = nullptr;
+    int matches = 0;
+    for (int si = 0; si < nt->FileHeader.NumberOfSections; ++si, ++sec) {
+        if (!(sec->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+        uint8_t* q = base + sec->VirtualAddress;
+        size_t n = sec->Misc.VirtualSize;
+        for (size_t i = 0; i + 64 < n; ++i) {
+            if (q[i] == 0x48 && q[i + 15] == 0x48 && q[i + 22] == 0x49 && memcmp(q + i, sig, sizeof(sig)) == 0) {
+                found = q + i;
+                ++matches;
+            }
+        }
+    }
+    if (matches != 1) {
+        logf(L"animal spawn blocker OFF: CheckIfCanSpawn signature found %d times (need 1)", matches);
+        return;
+    }
+    g_can_spawn_tramp = reinterpret_cast<CanSpawnFn>(detour15(found, reinterpret_cast<void*>(&can_spawn_detour)));
+    if (g_can_spawn_tramp) logf(L"animal spawn blocker hooked CheckIfCanSpawn at exe+0x%llX", static_cast<unsigned long long>(found - base));
+    else logf(L"animal spawn blocker OFF: patch failed");
 }
 
 void install_headshots() {
@@ -1544,6 +1614,7 @@ extern "C" __declspec(dllexport) Mod* start_mod() {
     install_spawn_blocker();
     DeleteFileW((g_dir + L"combat.txt").c_str());
     install_headshots();
+    install_animal_blocker();
     DeleteFileW((g_dir + L"toolbelt.txt").c_str());
     install_toolbelt();
     DeleteFileW((g_dir + L"reverb.txt").c_str());

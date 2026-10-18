@@ -74,6 +74,7 @@ return {
         spawnerSpreadMultiplier    = 2.5   , -- vanilla 1.0   how far apart an enemy group stands (vanilla 10 m square, 1 m apart)
         spawnerIntervalSeconds     = 1.0   , -- vanilla 0.1   seconds between each enemy a spawner creates (spreads the hitch)
         blockSpawnMetres           = 100   , -- vanilla 0     enemy spawners do not spawn while you are this close to them
+        animalBlockMetres            = 100   , -- vanilla 0     animal spawn points do not spawn while you are this close; they spawn once you are farther
     },
 
     -- HUNTING: Animal senses and behavior. 1.0 = vanilla.

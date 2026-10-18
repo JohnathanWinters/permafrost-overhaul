@@ -33,6 +33,7 @@ local DEFAULTS = {
     { "spawnerSpreadMultiplier",    2.5, "how far apart a spawner's group stands (vanilla 1.0 = 10 m square, 1 m apart)" },
     { "spawnerIntervalSeconds",     1.0, "seconds between each NPC a spawner creates (vanilla 0.1); spreads the spawn hitch" },
     { "blockSpawnMetres",           100, "spawners do not spawn while you are this close to them (vanilla 0 = no limit)" },
+    { "animalBlockMetres",          100, "animal spawn points do not spawn while you are this close; they spawn once you are farther (vanilla 0)" },
 }
 local MIN_MULT, MAX_MULT = 0.25, 6.0
 
@@ -475,7 +476,8 @@ local function calibration()
 end
 local function write_block()
     local cm = math.floor((tonumber(CFG.blockSpawnMetres) or 0) * 100)
-    local lines = { string.format("block=%d", cm) }
+    local lines = { string.format("block=%d", cm),
+                    string.format("animal=%d", math.floor((tonumber(CFG.animalBlockMetres) or 0) * 100)) }
     block_helpers = block_helpers or try(function() return require("UEHelpers") end)
     local pc = block_helpers and try(function() return block_helpers.GetPlayerController() end)
     local pawn = valid(pc) and try(function() return pc.Pawn end)
@@ -501,7 +503,53 @@ game_loop(500, function()
     local ok, err = pcall(write_block)
     if not ok then log("spawn blocker error: " .. tostring(err)) end
 end)
-log(string.format("spawn blocker: spawners stay quiet within %d m of you (native side logs to dlls\\CraftFromStorage.log)",
-    math.floor(tonumber(CFG.blockSpawnMetres) or 0)))
+log(string.format("spawn blocker: spawners stay quiet within %d m of you, animal spawn points within %d m (native side logs to dlls\\main.log)",
+    math.floor(tonumber(CFG.blockSpawnMetres) or 0), math.floor(tonumber(CFG.animalBlockMetres) or 0)))
+
+------------------------------------------------------------------ 7. deferred animal spawns
+-- main.dll refuses an animal spawn point's CheckIfCanSpawn while it is
+-- within animalBlockMetres of you (wolves appeared right next to the
+-- player, 2026-10-18). That check only runs when the point loads in or you
+-- walk into its range, so a refused point would never spawn. Points that
+-- were refused (not spawned yet, you inside their range but too close) are
+-- remembered; once you are past the limit and still in range, the game's
+-- own SpawnAnimals is called. Every 3 s.
+local deferred = {}            -- spawn point path -> true
+local defer_logged = 0
+local function deferred_pass()
+    local limit = (tonumber(CFG.animalBlockMetres) or 0) * 100
+    if limit <= 0 then return end
+    block_helpers = block_helpers or try(function() return require("UEHelpers") end)
+    local pc = block_helpers and try(function() return block_helpers.GetPlayerController() end)
+    local pawn = valid(pc) and try(function() return pc.Pawn end)
+    local p = valid(pawn) and LIB.call(pawn, "K2_GetActorLocation")
+    if not p then return end
+    local px, py, pz = p.X, p.Y, p.Z
+    for _, sp in ipairs(try(function() return FindAllOf("AnimalSpawnPoint") end) or {}) do
+        if valid(sp) and not fname(sp):find("^Default__") and LIB.get(sp, "bAnimalSpawned") == false then
+            local l = LIB.call(sp, "K2_GetActorLocation")
+            local det = LIB.get(sp, "PlayerDetection")
+            local range = valid(det) and tonumber(LIB.call(det, "GetScaledSphereRadius")) or 0
+            if l and range > 0 then
+                local d = math.sqrt((l.X - px) ^ 2 + (l.Y - py) ^ 2 + (l.Z - pz) ^ 2)
+                local path = LIB.path_of(sp)
+                if d < limit and d < range then
+                    deferred[path] = true
+                elseif deferred[path] and d >= limit and d < range then
+                    deferred[path] = nil
+                    LIB.call(sp, "SpawnAnimals")
+                    if defer_logged < 15 then
+                        defer_logged = defer_logged + 1
+                        log(string.format("deferred animal spawn: %s now %.0f m away", fname(sp), d / 100))
+                    end
+                end
+            end
+        end
+    end
+end
+game_loop(3000, function()
+    local ok, err = pcall(deferred_pass)
+    if not ok and defer_logged < 15 then defer_logged = defer_logged + 1 log("deferred spawn error: " .. tostring(err)) end
+end)
 
 log("loaded")
