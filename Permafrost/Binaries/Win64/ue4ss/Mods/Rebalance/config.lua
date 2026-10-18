@@ -22,6 +22,7 @@ return {
         craftfromstorage           = 1     , -- Scripts/craftfromstorage.lua craft, repair and build from nearby storage
         survivaltweaks             = 1     , -- Scripts/survivaltweaks.lua   hunger, stamina, warmth and damage rates
         toolbelt                   = 1     , -- Scripts/toolbelt.lua         knife in the hotbar counts as held
+        accuracy                   = 1     , -- Scripts/accuracy.lua         moving, jumping and rapid fire spread your shots; aiming and crouching tighten them; the crosshair shows it
         recipes                    = 1     , -- Scripts/recipes.lua          Makeshift Heater needs and repairs with chemicals
         food                       = 1     , -- Scripts/food.lua             food and drinks do not heal
         hud                        = 1     , -- Scripts/hud.lua              HUD parts fade out until needed
@@ -95,7 +96,9 @@ return {
 
     -- GUNS: Gun sound and handling. 1.0 = vanilla.
     Guns = {
-        shotVolume                 = 8.0   , -- vanilla 1.0   gunshot loudness (2.0 = +6 dB)
+        shotVolume                 = 10.0  , -- vanilla 1.0   gunshot loudness (2.0 = +6 dB)
+        duckAmount                 = 0.55  , -- vanilla 1.0   other sounds drop to this share of their volume right after your shot (1 = no ducking)
+        duckRecoverMs              = 900   , -- vanilla -     how long other sounds take to come back after a shot
         suppressedShotVolume       = 2.0   , -- vanilla 1.0   suppressed gunshot loudness
         gunReverbVolume            = 6.0   , -- vanilla 1.0   gunshot reverb
         worldReverbVolume          = 2.0   , -- vanilla 1.0   reverb on all sounds outdoors
@@ -117,7 +120,7 @@ return {
         shotPitch                  = 0.88  , -- vanilla 1.0   pitch of the shot (below 1 = less metallic)
         echoPitch                  = 0.92  , -- vanilla 1.0   pitch of echoes
         headshotMultiplier         = 2.0   , -- vanilla 1.0   head damage for melee weapons
-        headshotPistol             = 4.0   , -- vanilla 1.0   head damage for pistols and SMGs
+        headshotPistol             = 8.0   , -- vanilla 1.0   head damage for pistols and SMGs
         headshotRifle              = 8.0   , -- vanilla 1.0   head damage for rifles, shotguns and other guns
         headshotBow                = 8.0   , -- vanilla 1.0   head damage for bows
         recoilMultiplier           = 2.0   , -- vanilla 1.0   weapon kick
@@ -153,6 +156,21 @@ return {
         offsetDownCm                 = 25    , -- vanilla 0     light sits this far below your eyes, so its shadows show
         offsetRightCm                = 20    , -- vanilla 0     and this far to the right
         debugLog                     = 1     , -- vanilla -     1 = log what was found
+    },
+
+    -- ACCURACY: Extra spread on your shots on top of each gun's own. Degrees. The crosshair grows and shrinks with it.
+    Accuracy = {
+        moveSpreadDeg                = 2.0   , -- vanilla 0     extra spread at a full sprint (walking adds part of it)
+        airSpreadDeg                 = 3.0   , -- vanilla 0     extra spread while jumping or falling
+        shotSpreadDeg                = 0.6   , -- vanilla 0     extra spread added by each shot
+        shotRecoveryDegPerSec        = 3.0   , -- vanilla -     how fast the per-shot spread recovers
+        maxSpreadDeg                 = 5.0   , -- vanilla -     largest extra spread
+        aimMultiplier                = 0.35  , -- vanilla -     extra spread while aiming down sights (0.35 = 35%)
+        crouchMultiplier             = 0.7   , -- vanilla -     extra spread while crouched
+        sprintSpeed                  = 600   , -- vanilla -     speed in cm/s that counts as a full sprint
+        reticle                      = 1     , -- vanilla 0     1 = the crosshair grows and shrinks with the spread
+        reticleScalePerDeg           = 0.45  , -- vanilla -     crosshair growth per degree of extra spread
+        debugLog                     = 1     , -- vanilla -     1 = log the first shots
     },
 
     -- RECIPES: Crafting and repair costs.

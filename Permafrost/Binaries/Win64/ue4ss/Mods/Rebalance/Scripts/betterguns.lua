@@ -18,12 +18,14 @@ local try, valid, fname, game_loop, game_later = LIB.try, LIB.valid, LIB.fname, 
 
 ------------------------------------------------------------------ config
 local DEFAULTS = {
-    { "shotVolume",           8.0,  "gunshot loudness (1.0 = vanilla, 2.0 = +6 dB)" },
+    { "shotVolume",           10.0, "gunshot loudness (1.0 = vanilla, 2.0 = +6 dB)" },
+    { "duckAmount",           0.55, "other sounds drop to this share of their volume right after your shot (1 = no ducking)" },
+    { "duckRecoverMs",        900,  "how long other sounds take to come back after a shot" },
     { "suppressedShotVolume", 2.0,  "suppressed gunshot loudness" },
     { "gunReverbVolume",      6.0,  "Gun_Reverb bus (reverb return for gunshots)" },
     { "worldReverbVolume",    2.0,  "Reverb, ForestReverb, Cave_Reverb, Bunker_Reverb buses (all sounds)" },
     { "headshotMultiplier",   2.0, "head damage multiplier for melee weapons (vanilla 1.0)" },
-    { "headshotPistol",       4.0, "head damage multiplier for pistols and SMGs (vanilla 1.0)" },
+    { "headshotPistol",       8.0, "head damage multiplier for pistols and SMGs (vanilla 1.0)" },
     { "headshotRifle",        8.0, "head damage multiplier for rifles, shotguns and other guns (vanilla 1.0)" },
     { "headshotBow",          8.0, "head damage multiplier for bows (vanilla 1.0)" },
     { "recoilMultiplier",     2.0, "weapon kick (aim climb)" },
@@ -578,7 +580,44 @@ local function current_gun()
     if not gun_path then return nil end
     return LIB.resolve(gun_path)
 end
+------------------------------------------------------------------ ducking
+-- User 2026-10-18: a bit of ducking. Right after each of your shots the
+-- ambient, music and world-sound buses drop to duckAmount and come back
+-- over duckRecoverMs. Guns, dialogue and UI are untouched.
+local DUCK_BUSES = {
+    "/Game/FMOD/Buses/Master/Ambient", "/Game/FMOD/Buses/Master/Music",
+    "/Game/FMOD/Buses/Master/SFX/Env", "/Game/FMOD/Buses/Master/SFX/Random_Encounters",
+}
+local duck_at = nil        -- os.clock() of the last shot while ducking
+local duck_level = 1       -- volume last sent
+local function set_duck(vol)
+    local statics = try(function() return StaticFindObject("/Script/FMODStudio.Default__FMODBlueprintStatics") end)
+    if not valid(statics) then return end
+    for _, pkg in ipairs(DUCK_BUSES) do
+        local short = pkg:match("([^/]+)$")
+        local object_path = pkg .. "." .. short
+        LIB.register(object_path, "FMODBus")
+        -- Loading is allowed only when restoring to full volume, so a bus
+        -- never stays ducked; mid-duck steps use buses already loaded.
+        local bus = (vol >= 1) and find_or_load(object_path, pkg) or LIB.resolve(object_path)
+        if valid(bus) then try(function() statics:BusSetVolume(bus, vol) end) end
+    end
+    duck_level = vol
+end
+local function duck_tick()
+    if not duck_at then return end
+    local t = (os.clock() - duck_at) * 1000 / math.max(1, CFG.duckRecoverMs)
+    local vol = t >= 1 and 1 or CFG.duckAmount + (1 - CFG.duckAmount) * t * t   -- eases back in
+    if math.abs(vol - duck_level) > 0.03 or vol >= 1 then set_duck(vol) end
+    if vol >= 1 then duck_at = nil end
+end
+game_loop(50, function() pcall(duck_tick) end)
+
 local function on_shot(gun)
+    if CFG.duckAmount < 1 then
+        duck_at = os.clock()
+        if duck_level > CFG.duckAmount + 0.01 then set_duck(CFG.duckAmount) end
+    end
     pitch_shots(gun)
     play_bass(gun)
     local now = os.clock() * 1000

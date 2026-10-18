@@ -74,10 +74,14 @@ Only containers you have not opened yet change. A container that is still locked
 - Prey runs away from you and avoids you for 3 minutes.
 
 ### betterguns
-- Gunshots are 8x louder, deeper and less metallic.
-- A concert-hall reverb on your shots, stronger indoors.
+- Gunshots are 10x louder, deeper and less metallic, with a concert-hall reverb (stronger indoors).
+- Other sounds duck briefly after each of your shots.
 - 2x recoil and 2.5x camera kick.
-- Headshots hit harder: 4x pistols, 8x rifles, shotguns and bows, 2x melee.
+- Headshots hit harder: 8x pistols, rifles, shotguns and bows, 2x melee.
+
+### accuracy
+- Moving, jumping and rapid fire spread your shots; aiming down sights and crouching tighten them.
+- The crosshair grows and shrinks with your spread.
 
 ### flashlight
 - Casts shadows, aims a little higher and reaches 3x farther.
