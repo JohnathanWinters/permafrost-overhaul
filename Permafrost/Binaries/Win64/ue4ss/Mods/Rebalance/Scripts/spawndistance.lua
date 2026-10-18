@@ -508,17 +508,30 @@ log(string.format("spawn blocker: spawners stay quiet within %d m of you, animal
 
 ------------------------------------------------------------------ 7. deferred animal spawns
 -- main.dll refuses an animal spawn point's CheckIfCanSpawn while it is
--- within animalBlockMetres of you (wolves appeared right next to the
--- player, 2026-10-18). That check only runs when the point loads in or you
--- walk into its range, so a refused point would never spawn. Points that
--- were refused (not spawned yet, you inside their range but too close) are
--- remembered; once you are past the limit and still in range, the game's
--- own SpawnAnimals is called. Every 3 s.
-local deferred = {}            -- spawn point path -> true
+-- within animalBlockMetres of you, or before it knows where you are (right
+-- after loading). That check runs only when the point loads in or you walk
+-- into its range, so a refused point would never spawn. main.dll lists the
+-- refused points (dlls\animal_blocked.txt, addresses); once you are past the
+-- limit and still in range, the game's own SpawnAnimals is called. Every 3 s.
+local BLOCKED_FILE = (mod_root() or "") .. "dlls\\animal_blocked.txt"
+local spawned_late = {}        -- address -> true (done this session)
 local defer_logged = 0
+local function refused_set()
+    local set = {}
+    local f = io.open(BLOCKED_FILE, "r")
+    if not f then return set end
+    for line in f:lines() do
+        local v = tonumber(line, 16)
+        if v then set[v] = true end
+    end
+    f:close()
+    return set
+end
 local function deferred_pass()
     local limit = (tonumber(CFG.animalBlockMetres) or 0) * 100
     if limit <= 0 then return end
+    local refused = refused_set()
+    if next(refused) == nil then return end
     block_helpers = block_helpers or try(function() return require("UEHelpers") end)
     local pc = block_helpers and try(function() return block_helpers.GetPlayerController() end)
     local pawn = valid(pc) and try(function() return pc.Pawn end)
@@ -526,17 +539,15 @@ local function deferred_pass()
     if not p then return end
     local px, py, pz = p.X, p.Y, p.Z
     for _, sp in ipairs(try(function() return FindAllOf("AnimalSpawnPoint") end) or {}) do
-        if valid(sp) and not fname(sp):find("^Default__") and LIB.get(sp, "bAnimalSpawned") == false then
+        local addr = valid(sp) and LIB.address(sp)
+        if addr and refused[addr] and not spawned_late[addr] and LIB.get(sp, "bAnimalSpawned") == false then
             local l = LIB.call(sp, "K2_GetActorLocation")
             local det = LIB.get(sp, "PlayerDetection")
             local range = valid(det) and tonumber(LIB.call(det, "GetScaledSphereRadius")) or 0
             if l and range > 0 then
                 local d = math.sqrt((l.X - px) ^ 2 + (l.Y - py) ^ 2 + (l.Z - pz) ^ 2)
-                local path = LIB.path_of(sp)
-                if d < limit and d < range then
-                    deferred[path] = true
-                elseif deferred[path] and d >= limit and d < range then
-                    deferred[path] = nil
+                if d >= limit and d < range then
+                    spawned_late[addr] = true
                     LIB.call(sp, "SpawnAnimals")
                     if defer_logged < 15 then
                         defer_logged = defer_logged + 1
@@ -551,5 +562,75 @@ game_loop(3000, function()
     local ok, err = pcall(deferred_pass)
     if not ok and defer_logged < 15 then defer_logged = defer_logged + 1 log("deferred spawn error: " .. tostring(err)) end
 end)
+
+------------------------------------------------------------------ 8. too-close animals
+-- Wolves also come from scripted encounters (BP_Encounter_WolfPursuit),
+-- which no spawner check covers (2026-10-18). Any animal that appears
+-- within animalBlockMetres of you is moved straight out along the line
+-- from you through it, to animalBlockMetres + 20 m, onto the ground found
+-- by a downward trace. Nothing is destroyed (that crashed the autosave).
+-- New animals are only queued in the watcher; a 250 ms loop moves them.
+local new_animals = {}          -- { path, t }
+local moved_logged, trace_failed = 0, false
+local animal_class_ok = REBALANCE_ON_ACTOR("/Script/Permafrost.PermaAnimalBase", function(obj)
+    if #new_animals < 200 then new_animals[#new_animals + 1] = { LIB.path_of(obj), os.clock() } end
+end)
+local function ground_z(ksl, pawn, x, y, z)
+    local hit = {}
+    local ok = try(function()
+        return ksl:LineTraceSingle(pawn, { X = x, Y = y, Z = z + 5000 }, { X = x, Y = y, Z = z - 5000 },
+            0, false, {}, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
+    end)
+    local loc = ok == true and (hit.ImpactPoint or hit.Location)
+    local hz = loc and tonumber(loc.Z)
+    return hz
+end
+local function relocate_pass()
+    if #new_animals == 0 then return end
+    local limit = (tonumber(CFG.animalBlockMetres) or 0) * 100
+    local list = new_animals
+    new_animals = {}
+    if limit <= 0 then return end
+    block_helpers = block_helpers or try(function() return require("UEHelpers") end)
+    local pc = block_helpers and try(function() return block_helpers.GetPlayerController() end)
+    local pawn = valid(pc) and try(function() return pc.Pawn end)
+    local p = valid(pawn) and LIB.call(pawn, "K2_GetActorLocation")
+    if not p then
+        for _, e in ipairs(list) do if os.clock() - e[2] < 10 then new_animals[#new_animals + 1] = e end end
+        return
+    end
+    local ksl = try(function() return block_helpers.GetKismetSystemLibrary() end)
+    for _, e in ipairs(list) do
+        local a = resolve(e[1])
+        local l = a and LIB.call(a, "K2_GetActorLocation")
+        if l and LIB.get(a, "bIsDead") ~= true then
+            local dx, dy = l.X - p.X, l.Y - p.Y
+            local d = math.sqrt(dx * dx + dy * dy)
+            if d < limit then
+                if d < 1 then dx, dy, d = 1, 0, 1 end
+                local r = limit + 2000
+                local nx, ny = p.X + dx / d * r, p.Y + dy / d * r
+                local nz = (valid(ksl) and not trace_failed) and ground_z(ksl, pawn, nx, ny, l.Z) or nil
+                if not nz then
+                    if not trace_failed then
+                        trace_failed = true
+                        log("could not find the ground for a too-close animal; left in place")
+                    end
+                else
+                    LIB.call(a, "K2_TeleportTo", { X = nx, Y = ny, Z = nz + 100 }, LIB.call(a, "K2_GetActorRotation"))
+                    if moved_logged < 15 then
+                        moved_logged = moved_logged + 1
+                        log(string.format("moved %s from %.0f m to %.0f m away", fname(a), d / 100, r / 100))
+                    end
+                end
+            end
+        end
+    end
+end
+game_loop(250, function()
+    local ok, err = pcall(relocate_pass)
+    if not ok and moved_logged < 15 then moved_logged = moved_logged + 1 log("relocate error: " .. tostring(err)) end
+end)
+if not animal_class_ok then log("too-close animal watch FAILED (PermaAnimalBase not found)") end
 
 log("loaded")

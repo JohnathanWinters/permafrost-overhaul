@@ -73,34 +73,80 @@ local function item_name(soft)
 end
 
 local heater_done, repair_done = false, false
+-- User 2026-10-18: the Makeshift Heater should take plastic, cloth AND
+-- chemicals (it showed two ingredients). Every ingredient is logged by name
+-- and amount; any of the three that is missing is added (chemicals:
+-- heaterChemicals, plastic/cloth: 2).
+local NEEDED = { { "Cloth", "DA_Resource_Cloth", 2 }, { "Plastic", "DA_Resource_Plastic", 2 },
+                 { "Chemicals", "DA_Resource_Chemicals", nil } }
+local function short_item(name)
+    return (name:match("([%w_]+)%.[%w_]+$") or name:match("([%w_]+)$") or name)
+end
+local function cost_list(cost)
+    local out = {}
+    try(function()
+        cost:ForEach(function(_, e)
+            local st = e:get()
+            out[#out + 1] = { Item = st.Item, Amount = tonumber(st.Amount) or 0, name = short_item(item_name(st.Item)) }
+        end)
+    end)
+    return out
+end
+local function describe(list)
+    local parts = {}
+    for _, e in ipairs(list) do parts[#parts + 1] = e.name .. " x" .. e.Amount end
+    return table.concat(parts, ", ")
+end
+
 local function fix_heater_recipe(chem)
     if heater_done or CFG.heaterChemicals <= 0 then return end
     local r = find_or_load(HEATER_RECIPE)
     local cost = r and get(r, "Cost")
     if not cost then return end
-    heater_done = true
-    local entries, has = {}, false
-    try(function()
-        cost:ForEach(function(_, e)
-            local s = e:get()
-            local name = item_name(s.Item)
-            if name:find("Chemicals") then has = true end
-            entries[#entries + 1] = { Item = s.Item, Amount = s.Amount }
-        end)
-    end)
-    if has then log("heater recipe already has chemicals") return end
-    local before = #entries
-    -- Append in place; if the array cannot grow from Lua, assign it whole.
-    local ok = try(function() cost[before + 1] = { Item = chem, Amount = CFG.heaterChemicals }; return true end)
-    if not ok or arr_len(cost) ~= before + 1 then
-        entries[#entries + 1] = { Item = chem, Amount = CFG.heaterChemicals }
-        try(function() r.Cost = entries end)
+    local list = cost_list(cost)
+    local refs = { DA_Resource_Chemicals = chem }
+    local DATA = REBALANCE_SHARED("lootdata")
+    DATA.start()
+    for _, n in ipairs(NEEDED) do
+        if not refs[n[2]] then refs[n[2]] = DATA.soft_ref(n[2]) end
     end
-    local now = arr_len(get(r, "Cost"))
-    log(string.format("Makeshift Heater recipe: %d -> %d ingredients%s", before, now,
-        now == before + 1 and string.format(" (+%d chemicals)", CFG.heaterChemicals) or " (FAILED to add chemicals)"))
+    local missing = {}
+    for _, n in ipairs(NEEDED) do
+        local found = false
+        for _, e in ipairs(list) do if e.name:find(n[1], 1, true) then found = true end end
+        if not found then missing[#missing + 1] = n end
+    end
+    if #missing == 0 then
+        heater_done = true
+        log("Makeshift Heater recipe already needs: " .. describe(list))
+        return
+    end
+    -- Wait for the item references (loot tables load a few seconds in).
+    for _, n in ipairs(missing) do
+        if refs[n[2]] == nil then return end
+    end
+    heater_done = true
+    local before = describe(list)
+    local entries = {}
+    for _, e in ipairs(list) do entries[#entries + 1] = { Item = e.Item, Amount = e.Amount } end
+    for _, n in ipairs(missing) do
+        entries[#entries + 1] = { Item = refs[n[2]], Amount = n[3] or CFG.heaterChemicals }
+    end
+    -- Append in place; if the array cannot grow from Lua, assign it whole.
+    local n0 = #list
+    for k = n0 + 1, #entries do
+        try(function() cost[k] = entries[k] end)
+    end
+    if arr_len(cost) ~= #entries then try(function() r.Cost = entries end) end
+    local after = cost_list(get(r, "Cost"))
+    log(string.format("Makeshift Heater recipe: [%s] -> [%s]%s", before, describe(after),
+        #after == #entries and "" or " (FAILED: the ingredient list could not be grown from Lua)"))
 end
 
+-- Repair (user 2026-10-18): 1 chemicals, nothing else. The repair cost is a
+-- map item -> amount struct; the chemicals entry's amount is set (every
+-- numeric field of the struct is logged once so the right one is known)
+-- and every other entry removed. Nothing is removed unless chemicals stays.
 local function fix_heater_repair(chem)
     if repair_done or CFG.heaterRepairChemicals <= 0 then return end
     local it = find_or_load(HEATER_ITEM)
@@ -108,35 +154,52 @@ local function fix_heater_repair(chem)
     local map = dc and get(dc, "RepairCost")
     if not map then return end
     repair_done = true
-    -- Vanilla already repairs it with chemicals (log 2026-10-18): leave it.
-    -- Otherwise add chemicals first and drop the other entries only once the
-    -- add is confirmed (an earlier version emptied the map, then the add
-    -- failed and repairs became free).
-    local old, has_chem = {}, false
+    local entries = {}
     try(function()
-        map:ForEach(function(k)
-            local n = item_name(k:get())
-            old[#old + 1] = n:match("[%.]([^%.]+)$") or n
-            if n:find("Chemicals") then has_chem = true end
+        map:ForEach(function(k, v)
+            entries[#entries + 1] = { key = k:get(), val = v, name = short_item(item_name(k:get())) }
         end)
     end)
-    if has_chem then
-        log("Makeshift Heater already repairs with chemicals (vanilla): unchanged")
+    local function fields(val)
+        local st = try(function() return val:get() end) or val
+        local parts = {}
+        for _, f in ipairs({ "Amount", "Value", "Count", "Quantity", "Min", "Max", "LowerBound", "UpperBound" }) do
+            local x = try(function() return st[f] end)
+            if type(x) == "number" then parts[#parts + 1] = f .. "=" .. x end
+        end
+        if type(st) == "number" then parts[#parts + 1] = "=" .. st end
+        return table.concat(parts, " "), st
+    end
+    local before = {}
+    for _, e in ipairs(entries) do before[#before + 1] = e.name .. " (" .. fields(e.val) .. ")" end
+    log("Makeshift Heater repair cost (vanilla): " .. table.concat(before, ", "))
+    local chem_entry = nil
+    for _, e in ipairs(entries) do if e.name:find("Chemicals", 1, true) then chem_entry = e end end
+    if not chem_entry then
+        log("Makeshift Heater repair: no chemicals entry to keep; vanilla repair cost kept")
         return
     end
-    local added = try(function() map:Add(chem, CFG.heaterRepairChemicals); return true end)
-    local now_has = false
-    try(function() map:ForEach(function(k) if item_name(k:get()):find("Chemicals") then now_has = true end end) end)
-    if not (added and now_has) then
-        log("Makeshift Heater repair: could not add chemicals from Lua; vanilla repair cost kept ("
-            .. table.concat(old, ", ") .. ")")
-        return
+    -- Set its amount.
+    local _, st = fields(chem_entry.val)
+    local set_ok = false
+    if type(st) == "number" then
+        set_ok = try(function() chem_entry.val:set(CFG.heaterRepairChemicals); return true end) == true
+    else
+        for _, f in ipairs({ "Amount", "Value", "Count", "Quantity" }) do
+            if type(try(function() return st[f] end)) == "number" then
+                set_ok = try(function() st[f] = CFG.heaterRepairChemicals; return true end) == true
+                if set_ok then break end
+            end
+        end
     end
-    -- Chemicals are in: remove everything else.
-    local others = {}
-    try(function() map:ForEach(function(k) if not item_name(k:get()):find("Chemicals") then others[#others + 1] = k:get() end end) end)
-    for _, k in ipairs(others) do try(function() map:Remove(k) end) end
-    log("Makeshift Heater repair: [" .. table.concat(old, ", ") .. "] -> chemicals only")
+    for _, e in ipairs(entries) do
+        if e ~= chem_entry then try(function() map:Remove(e.key) end) end
+    end
+    local after = {}
+    try(function()
+        map:ForEach(function(k, v) after[#after + 1] = short_item(item_name(k:get())) .. " (" .. fields(v) .. ")" end)
+    end)
+    log("Makeshift Heater repair cost now: " .. table.concat(after, ", ") .. (set_ok and "" or " (amount could not be set)"))
 end
 
 

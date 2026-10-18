@@ -505,6 +505,7 @@ void read_spawnblock();  // spawn blocker, below
 void read_combat();      // headshots, below
 void read_toolbelt();    // toolbelt, below
 void read_reverb();      // hall reverb, below
+void write_animal_refused();  // animal spawn blocker, below
 void install_reverb();
 void read_survival();    // survival rates, below
 
@@ -519,6 +520,7 @@ void tick() {
     read_toolbelt();
     install_reverb();
     read_reverb();
+    write_animal_refused();
     read_survival();
     if (g_patched_count.load() > 0 && now >= g_next_stats) {
         g_next_stats = now + 60000;
@@ -798,10 +800,51 @@ CanSpawnFn g_can_spawn_tramp = nullptr;
 std::atomic<int> g_animal_blocked{0};
 thread_local int t_in_animal = 0;
 
+// Refused spawners, for spawndistance.lua's deferred spawn (dlls\animal_blocked.txt).
+CRITICAL_SECTION g_animal_lock;
+std::vector<uintptr_t> g_animal_refused;
+bool g_animal_dirty = false;
+void animal_refuse(void* self) {
+    EnterCriticalSection(&g_animal_lock);
+    auto a = reinterpret_cast<uintptr_t>(self);
+    if (std::find(g_animal_refused.begin(), g_animal_refused.end(), a) == g_animal_refused.end()) {
+        g_animal_refused.push_back(a);
+        g_animal_dirty = true;
+    }
+    LeaveCriticalSection(&g_animal_lock);
+}
+void write_animal_refused() {
+    EnterCriticalSection(&g_animal_lock);
+    if (!g_animal_dirty) { LeaveCriticalSection(&g_animal_lock); return; }
+    g_animal_dirty = false;
+    std::string text;
+    char buf[32];
+    for (uintptr_t a : g_animal_refused) {
+        snprintf(buf, sizeof(buf), "%llX\n", static_cast<unsigned long long>(a));
+        text += buf;
+    }
+    LeaveCriticalSection(&g_animal_lock);
+    text += "end\n";
+    std::wstring path = g_dir + L"animal_blocked.txt", tmp = path + L".tmp";
+    FILE* f = _wfopen(tmp.c_str(), L"wb");
+    if (!f) return;
+    fwrite(text.data(), 1, text.size(), f);
+    fclose(f);
+    MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
 bool can_spawn_detour(void* self, void* pawn, void* pc, void* narrative) {
     InHook in_hook(t_in_animal);
     const long long cm = g_animal_cm.load(std::memory_order_relaxed);
     const int ro = g_root_off.load(std::memory_order_acquire), lo = g_loc_off.load(std::memory_order_acquire);
+    // Not calibrated yet (right after loading, when spawn points fire with
+    // the player inside their range): refuse; the deferred spawn brings them.
+    if (self && cm > 0 && (ro < 0 || lo < 0 || !g_player_known.load(std::memory_order_acquire))) {
+        animal_refuse(self);
+        int n = g_animal_blocked.fetch_add(1) + 1;
+        if (n <= 25) logf(L"animal spawn blocked #%d: player position not known yet (spawns later)", n);
+        return false;
+    }
     if (self && cm > 0 && ro >= 0 && lo >= 0 && g_player_known.load(std::memory_order_acquire)) {
         void* root = *reinterpret_cast<void* const*>(static_cast<const uint8_t*>(self) + ro);
         if (root) {
@@ -810,6 +853,7 @@ bool can_spawn_detour(void* self, void* pawn, void* pc, void* narrative) {
                          dz = p[2] - static_cast<double>(g_pz.load());
             const double d2 = dx * dx + dy * dy + dz * dz;
             if (d2 < static_cast<double>(cm) * static_cast<double>(cm)) {
+                animal_refuse(self);
                 int n = g_animal_blocked.fetch_add(1) + 1;
                 if (n <= 25) logf(L"animal spawn blocked #%d: spawn point %.0f m from you (limit %lld m)", n, sqrt(d2) / 100.0, cm / 100);
                 return false;
@@ -820,6 +864,7 @@ bool can_spawn_detour(void* self, void* pawn, void* pc, void* narrative) {
 }
 
 void install_animal_blocker() {
+    InitializeCriticalSection(&g_animal_lock);
     // mov [rsp+8],rbx; mov [rsp+10h],rsi; push rdi; sub rsp,20h;
     // mov rbx,[rcx+2B8h]; mov rsi,r9; movsxd rax,dword [rcx+2C0h]
     static const uint8_t sig[] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xEC, 0x20,
@@ -1614,6 +1659,7 @@ extern "C" __declspec(dllexport) Mod* start_mod() {
     install_spawn_blocker();
     DeleteFileW((g_dir + L"combat.txt").c_str());
     install_headshots();
+    DeleteFileW((g_dir + L"animal_blocked.txt").c_str());  // last session's addresses
     install_animal_blocker();
     DeleteFileW((g_dir + L"toolbelt.txt").c_str());
     install_toolbelt();

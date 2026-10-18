@@ -104,6 +104,18 @@ local UI_CLASSES = {
     "/Script/Permafrost.Widget_CraftingTooltip",
     "/Script/Permafrost.Widget_SingleCraftingPosition",
     "/Script/Permafrost.Widget_UniformSingleObjectPosition",
+    -- Repair menu (user 2026-10-18: repairs needed the material on you).
+    "/Script/Permafrost.RepairStationWidget",
+    "/Script/Permafrost.ServiceWidgetBase",
+}
+-- Single UFunctions that run a repair: the repair button calls
+-- UUI_ManagerComponent::SERVER_RepairItem(Inventory, Slot), which runs
+-- URepairStationComponent::AUTHORITY_RepairItem -> CheckForItem /
+-- RemoveItemAmount on the player's inventory (the hooked slots). Only this
+-- one is wrapped: wrapping the whole UI manager would show storage items in
+-- ordinary inventory views.
+local CRAFT_FUNCTIONS = {
+    "/Script/Permafrost.UI_ManagerComponent:SERVER_RepairItem",
 }
 local INV = "/Script/Permafrost.InventoryComponent:"
 
@@ -141,6 +153,15 @@ local function build_static()
     end
     local craft, ui = 0, 0
     for _, p in ipairs(CRAFT_CLASSES) do craft = craft + class_functions(p, "craft", lines) end
+    for _, p in ipairs(CRAFT_FUNCTIONS) do
+        local a = address(try(function() return StaticFindObject(p) end))
+        if a then
+            lines[#lines + 1] = string.format("craft=%X", a)
+            craft = craft + 1
+        else
+            log("repair function not found: " .. p)
+        end
+    end
     for _, p in ipairs(UI_CLASSES) do ui = ui + class_functions(p, "ui", lines) end
     if craft == 0 then
         log("FAIL: no crafting UFunctions found")

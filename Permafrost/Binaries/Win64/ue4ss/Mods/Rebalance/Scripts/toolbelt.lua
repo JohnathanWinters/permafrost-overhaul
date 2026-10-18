@@ -460,6 +460,7 @@ end
 
 local draw = nil             -- { prev = slot or false, at = time, check_at = time, released_at = time }
 local draw_failed = false
+local draw_misses = 0
 local function target_lock(pc, pawn)
     local p = LIB.call(pawn, "K2_GetActorLocation")
     local rot = LIB.call(pc, "GetControlRotation")
@@ -515,15 +516,27 @@ local function hotbar_unlock()
 
     -- After a draw: check it worked, and put the knife away after release.
     if draw then
-        if draw.check_at and now >= draw.check_at then
-            draw.check_at = nil
-            if not in_hand then
-                draw_failed = true
-                log("auto-draw did not put the knife in your hands; boxes fall back to opening directly")
+        -- The equip animation takes a moment: success as soon as the knife is
+        -- in hand, failure only after 2 s (0.6 s cut off a working draw,
+        -- 2026-10-18). Three misses in a row turn auto-draw off.
+        if draw.check_at then
+            if in_hand then
+                draw.check_at = nil
+                draw_misses = 0
+                if unlock_logged < 10 then
+                    unlock_logged = unlock_logged + 1
+                    log("knife drawn automatically from quick slot " .. tostring(draw.slot))
+                end
+            elseif now >= draw.check_at then
+                draw_misses = draw_misses + 1
+                log(string.format("auto-draw: knife not in hand after 2 s (quick slot %s, miss %d of 3)", tostring(draw.slot), draw_misses))
+                if draw_misses >= 3 then
+                    draw_failed = true
+                    log("auto-draw off for this session; boxes fall back to opening directly")
+                end
                 draw = nil
                 return
             end
-            log("knife drawn automatically from quick slot " .. tostring(draw.slot))
         end
         if down then
             draw.released_at = nil
@@ -555,7 +568,7 @@ local function hotbar_unlock()
         if ks then
             local prev_item = held_item_addr(equip)
             if press_quick_slot(ks) then
-                draw = { slot = ks, prev_item = prev_item, check_at = now + 0.6 }
+                draw = { slot = ks, prev_item = prev_item, check_at = now + 2.0 }
                 return
             end
         end

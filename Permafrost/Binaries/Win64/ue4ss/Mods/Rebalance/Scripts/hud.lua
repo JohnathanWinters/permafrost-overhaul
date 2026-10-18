@@ -67,11 +67,7 @@ local PARTS = {
 }
 local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" },
                    { "UW_LedgerMenu", "menu" } }
--- The bottom-left stat diamonds and the bottom-right toolbelt are separate
--- widgets, outside UW_HUD (user screenshot 2026-10-18). Found by their own
--- class each pass; only the widgets themselves are touched (no owner
--- climbing: that crashed during a world load).
-local PANEL_CLASSES = { health = { "UW_HUDStatusPanel_C" }, hotbar = { "UW_QuickSlot_C" } }
+
 -- Never walked into: the compass and its markers, the crosshairs.
 local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true,
                   Canvas_WorldIndicators = true, Canvas_WorldMapMarkers = true }
@@ -238,31 +234,6 @@ local function scan(hud)
     return true
 end
 
--- Lowest ProgressBar fill under a widget (small trees: the stat panel).
-local function lowest_in(w, depth, best)
-    if depth > 8 then return best end
-    if cls_name(w):find("ProgressBar") then
-        local pct = tonumber(get(w, "Percent"))
-        if pct then best = math.min(best or 1, pct) end
-    end
-    each_child(w, function(c) best = lowest_in(c, depth + 1, best) end)
-    return best
-end
-
-local panel_logged = {}
-local function panels(key)
-    local out = {}
-    for _, cls in ipairs(PANEL_CLASSES[key] or {}) do
-        for _, w in ipairs(try(function() return FindAllOf(cls) end) or {}) do
-            if valid(w) and not fname(w):find("^Default__") then out[#out + 1] = w end
-        end
-    end
-    if CFG.debugLog == 1 and not panel_logged[key] and #out > 0 then
-        panel_logged[key] = true
-        log(string.format("%s: %d separate widget(s) (%s)", key, #out, table.concat(PANEL_CLASSES[key], ", ")))
-    end
-    return out
-end
 
 -- Lowest fill under a widget: ProgressBars, and "284/300"-style texts.
 local function lowest_stat(w, depth, best)
@@ -286,37 +257,6 @@ end
 -- shown, 2026-10-18.)
 local function menu_open(pc)
     return pc ~= nil and get(pc, "bShowMouseCursor") == true
-end
-
--- Once: what surrounds the stat panel (its parents through GetParent, and
--- the top one's children), to find the toolbelt widget. Written to
--- dlls\hud_panels.txt. Only parents and children are followed, never owners.
-local panels_dumped = false
-local function dump_panels()
-    if panels_dumped or CFG.debugLog ~= 1 then return end
-    local list = panels("health")
-    if #list == 0 then return end
-    panels_dumped = true
-    local lines = {}
-    for n, w in ipairs(list) do
-        local top, chain = w, { fname(w) }
-        for _ = 1, 8 do
-            local p = call(top, "GetParent")
-            if not valid(p) then break end
-            top = p
-            chain[#chain + 1] = fname(p) .. " (" .. cls_name(p) .. ")"
-        end
-        lines[#lines + 1] = string.format("== status panel %d, parents: %s", n, table.concat(chain, " < "))
-        local function rec(x, depth)
-            if depth > 7 or #lines > 400 then return end
-            lines[#lines + 1] = string.rep("  ", depth) .. fname(x) .. " (" .. cls_name(x) .. ")"
-            each_child(x, function(c) rec(c, depth + 1) end)
-        end
-        rec(top, 0)
-    end
-    local f = io.open(ROOT .. "dlls\\hud_panels.txt", "w")
-    if f then f:write(table.concat(lines, "\n") .. "\n") f:close() end
-    log("stat panel surroundings written to dlls\\hud_panels.txt")
 end
 
 ------------------------------------------------------------------ rules
@@ -369,7 +309,6 @@ local function decide(hud)
             local w = follow(hud, e.route)
             if w then low = lowest_stat(w, 0, low) end
         end
-        for _, w in ipairs(panels("health")) do low = lowest_stat(w, 0, low) end
         targets.health = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
     end
     local pc = player_pc()
@@ -438,7 +377,6 @@ local function fade(hud)
                 local w = follow(hud, e.route)
                 if w then call(w, "SetRenderOpacity", shown) end
             end
-            for _, w in ipairs(panels(key)) do call(w, "SetRenderOpacity", shown) end
         end
     end
 end
@@ -468,7 +406,6 @@ game_loop(STEP_MS, function()
             scan_at = now + 3
         end
         if not odd then decide(hud) end
-        pcall(dump_panels)
         fade(hud)
     end)
     if not ok and errors < 10 then errors = errors + 1 log("error: " .. tostring(err)) end
