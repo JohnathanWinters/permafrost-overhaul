@@ -106,73 +106,63 @@ local function scalar_params(mat)
     return out, snow
 end
 local diag, unresolved = 0, 0
-local function log_part(actor)
-    mesh_class = mesh_class or try(function() return StaticFindObject("/Script/Engine.MeshComponent") end)
-    local comps = valid(mesh_class) and call(actor, "K2_GetComponentsByClass", mesh_class)
-    if diag < 5 then
-        diag = diag + 1
-        local n = 0
-        if comps then try(function() comps:ForEach(function() n = n + 1 end) end) end
-        log(string.format("part %s: mesh class %s, %s mesh components", fname(actor), tostring(valid(mesh_class)),
-            comps and tostring(n) or "no list"))
+-- K2_GetComponentsByClass gave 0 mesh components on built parts
+-- (2026-10-18), but the door showed its mesh as a property (StaticMesh1).
+-- So the part's own class properties are walked (3 class levels) and every
+-- value that is a mesh component is used, plus the root component.
+local function part_meshes(actor)
+    local out, seen = {}, {}
+    local function add(c)
+        if not valid(c) then return end
+        local a = LIB.address(c)
+        if a and seen[a] then return end
+        local cn = fname(call(c, "GetClass")) or ""
+        if cn:find("MeshComponent") then
+            if a then seen[a] = true end
+            out[#out + 1] = c
+        end
     end
-    if not comps then return end
-    try(function()
-        comps:ForEach(function(_, e)
-            local c = e:get()
-            local n = tonumber(call(c, "GetNumMaterials")) or 0
-            for i = 0, n - 1 do
-                if mat_count >= CFG.maxMaterials then return end
-                local mat = call(c, "GetMaterial", i)
-                local mn = valid(mat) and fname(mat)
-                if mn and not seen_mats[mn] then
-                    seen_mats[mn] = true
-                    mat_count = mat_count + 1
-                    local params, snow = scalar_params(mat)
-                    log(string.format("material %d on %s: %s | scalars: %s%s", mat_count, fname(actor), parent_chain(mat),
-                        #params > 0 and table.concat(params, ", ") or "none", snow and "  <- HAS SNOW" or ""))
+    add(get(actor, "RootComponent"))
+    local cls = call(actor, "GetClass")
+    for _ = 1, 3 do
+        if not valid(cls) then break end
+        try(function()
+            cls:ForEachProperty(function(prop)
+                local n = try(function() return prop:GetFName():ToString() end)
+                if n then
+                    local v = get(actor, n)
+                    if type(v) == "userdata" then try(function() add(v) end) end
                 end
-            end
+            end)
         end)
-    end)
+        cls = try(function() return cls:GetSuperStruct() end)
+    end
+    return out
 end
 
--- Built parts showed 0 mesh components (2026-10-18): building meshes are
--- probably instanced, drawn by a grid/manager actor. Once in the world,
--- every instanced mesh component whose owner's class mentions building is
--- listed with its materials (and their scalar parameters).
-local ism_done = false
-local function log_instanced()
-    if ism_done then return end
-    ism_done = true
-    local owners, n = {}, 0
-    for _, c in ipairs(try(function() return FindAllOf("InstancedStaticMeshComponent") end) or {}) do
-        if valid(c) and not fname(c):find("^Default__") then
-            local o = call(c, "GetOwner")
-            local oc = valid(o) and fname(call(o, "GetClass")) or "?"
-            local l = oc:lower()
-            if l:find("build") or l:find("grid") or l:find("part") then
-                n = n + 1
-                owners[oc] = (owners[oc] or 0) + 1
-                local m = tonumber(call(c, "GetNumMaterials")) or 0
-                for i = 0, m - 1 do
-                    if mat_count >= CFG.maxMaterials then break end
-                    local mat = call(c, "GetMaterial", i)
-                    local mn = valid(mat) and fname(mat)
-                    if mn and not seen_mats[mn] then
-                        seen_mats[mn] = true
-                        mat_count = mat_count + 1
-                        local params, snow = scalar_params(mat)
-                        log(string.format("instanced material %d (%s on %s): %s | scalars: %s%s", mat_count, fname(c), oc,
-                            parent_chain(mat), #params > 0 and table.concat(params, ", ") or "none", snow and "  <- HAS SNOW" or ""))
-                    end
-                end
+local function log_part(actor)
+    local comps = part_meshes(actor)
+    if diag < 8 then
+        diag = diag + 1
+        local names = {}
+        for _, c in ipairs(comps) do names[#names + 1] = fname(c) .. ":" .. (fname(call(c, "GetClass")) or "?") end
+        log(string.format("part %s: %d mesh components (%s)", fname(actor), #comps, table.concat(names, ", ")))
+    end
+    for _, c in ipairs(comps) do
+        local n = tonumber(call(c, "GetNumMaterials")) or 0
+        for i = 0, n - 1 do
+            if mat_count >= CFG.maxMaterials then return end
+            local mat = call(c, "GetMaterial", i)
+            local mn = valid(mat) and fname(mat)
+            if mn and not seen_mats[mn] then
+                seen_mats[mn] = true
+                mat_count = mat_count + 1
+                local params, snow = scalar_params(mat)
+                log(string.format("material %d on %s (%s): %s | scalars: %s%s", mat_count, fname(actor), fname(c), parent_chain(mat),
+                    #params > 0 and table.concat(params, ", ") or "none", snow and "  <- HAS SNOW" or ""))
             end
         end
     end
-    local parts = {}
-    for k, v in pairs(owners) do parts[#parts + 1] = k .. " x" .. v end
-    log(string.format("instanced building meshes: %d components (%s)", n, #parts > 0 and table.concat(parts, ", ") or "none"))
 end
 
 local settle = os.clock() + 15
@@ -208,7 +198,6 @@ game_loop(1000, function()
                 log(string.format("built parts found: %d new", n))
             end
         end
-        if scanned then pcall(log_instanced) end
         if mat_count >= CFG.maxMaterials then queue = {} return end
         local list = queue
         queue = {}
