@@ -115,8 +115,9 @@ local function read_skill(pawn)
         end
     end
     if not level or not per then return end
-    -- Benefit per level as a share (the asset may store 2 for 2 %).
-    local share = per > 1 and per / 100 or per
+    -- Benefit per level in percent (DA_Skill_Accuracy stores 1.0 = 1 % per
+    -- level; reading it as a share pinned level 11 at the floor, 2026-10-18).
+    local share = per / 100
     skill_mult = math.max(CFG.minSkillMultiplier, 1 - level * share)
     if CFG.debugLog == 1 and not skill_logged then
         skill_logged = true

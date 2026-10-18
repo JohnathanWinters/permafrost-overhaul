@@ -383,6 +383,13 @@ local function find_interact_keys()
 end
 
 local has_knife = false          -- refreshed by the native feed below (every 0.5 s)
+local animal_class = nil
+local function is_creature(actor)
+    animal_class = animal_class or try(function() return StaticFindObject("/Script/Permafrost.PermaAnimalBase") end)
+    if valid(animal_class) and LIB.call(actor, "IsA", animal_class) == true then return true end
+    local cls = fname(LIB.call(actor, "GetClass")) or ""
+    return cls:find("Carcass", 1, true) ~= nil or cls:find("Wolf", 1, true) ~= nil or cls:find("Animal", 1, true) ~= nil
+end
 local unlock_logged = 0
 local function held_tool_type(equip)
     local item = try(function() return equip.HeldItem.ItemActor end)
@@ -421,6 +428,10 @@ local function hotbar_unlock()
     for _, lock in ipairs(try(function() return FindAllOf("Padlock") end) or {}) do
         if valid(lock) and LIB.get(lock, "bLocked") == true and tonumber(LIB.get(lock, "RequiredTool")) == TOOL.knife then
             local owner = LIB.call(lock, "GetOwner")
+            -- Animals and carcasses use a padlock as their skinning progress;
+            -- finishing it from here skipped the skinning and left a wolf
+            -- stuck (2026-10-18). Only real locks (boxes) are opened.
+            if valid(owner) and is_creature(owner) then owner = nil end
             local l = valid(owner) and LIB.call(owner, "K2_GetActorLocation")
             if l then
                 local dx, dy, dz = l.X - px, l.Y - py, l.Z - pz

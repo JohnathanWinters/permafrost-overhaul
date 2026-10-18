@@ -44,7 +44,10 @@ local function pass()
         if valid(lock) and not fname(lock):find("^Default__") then
             local owner = call(lock, "GetOwner")
             local path = valid(owner) and LIB.path_of(owner) or ""
-            if path ~= "" then
+            -- World-placed actors only (their names carry a fixed UAID).
+            -- Spawned animals reuse names between sessions and use a padlock
+            -- as skinning progress; unlocking one left a wolf stuck.
+            if path ~= "" and path:find("_UAID_", 1, true) then
                 local locked = get(lock, "bLocked")
                 if locked == false then
                     remember(path)

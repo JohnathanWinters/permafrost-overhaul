@@ -106,7 +106,7 @@ local function flinch_pass()
                                     call(npc, "StopAnimMontage", m)
                                     if CFG.debugLog == 1 and stopped_logged < 10 then
                                         stopped_logged = stopped_logged + 1
-                                        log(string.format("flinch skipped on %s (%s, %.1f s after the last one)", fname(npc), mn, now - prev))
+                                        log(string.format("flinch skipped on %s (%s, %.1f s after the last one)", fname(npc), mn, prev and now - prev or 0))
                                     end
                                 else
                                     last_flinch[a] = now
