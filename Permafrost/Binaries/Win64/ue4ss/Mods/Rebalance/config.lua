@@ -28,6 +28,7 @@ return {
         hud                        = 1     , -- Scripts/hud.lua              HUD parts fade out until needed
         buildsnow                  = 1     , -- Scripts/buildsnow.lua        snow on player-built structures (now: discovery only, logs, changes nothing)
         warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
+        weather                    = 1     , -- Scripts/weather.lua          storms and snowfall come more often
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
     },
@@ -179,6 +180,14 @@ return {
         reticleLength                = 10    , -- vanilla -     length of each crosshair line (pixels)
         reticleThickness             = 2     , -- vanilla -     thickness of each crosshair line (pixels)
         debugLog                     = 1     , -- vanilla -     1 = log the first shots
+    },
+
+    -- WEATHER: How often storms come. 1.0 = vanilla.
+    Weather = {
+        blizzardChanceMultiplier     = 2.5   , -- vanilla 1.0   how much more likely blizzards are
+        blizzardCooldownMultiplier   = 0.5   , -- vanilla 1.0   how much shorter the wait between blizzards is
+        snowChanceMultiplier         = 1.5   , -- vanilla 1.0   how much more likely snowfall (and snowstorms) is
+        snowCooldownMultiplier       = 0.75  , -- vanilla 1.0   how much shorter the wait between snowfalls is
     },
 
     -- RECIPES: Crafting and repair costs.
