@@ -1,13 +1,17 @@
 -- BuildSnow module of the Overhaul (2026-10-18). User: the character slowly
 -- gets snow on it; player-built structures should too.
--- Step 1 (this version): discovery only, nothing in the game changes.
---  * The character's snow manager (BPC_CharacterSnowManager): its numbers
---    and names, to learn how the character's snow is driven.
---  * Player-built parts (ABuildPartBase): for each distinct material on
---    their meshes, the scalar parameters it overrides and its parent chain,
---    so we know whether building materials can take a snow amount.
--- Everything goes to UE4SS.log with the tag [PF BuildSnow].
--- Settings: BuildSnow section of config.lua.
+-- What discovery found: every built part (foundations, walls, floors,
+-- doorways) draws with its own dynamic material MID_MI_WoodenConstruction,
+-- whose master is MM_Opaque_VT, the same master the game's snowy rocks and
+-- wood use. That master has a snow layer driven by "Coverage (Snow)",
+-- "Falloff Offset (Snow)" and "Mask Cutoff (Snow)" (the snowy wood uses
+-- 0.90 / 0.20 / 0.05). Built parts just leave coverage at 0.
+-- This module sets those three on each built part's dynamic materials, so
+-- snow lies on the upward faces like on the world's buildings. Parts are
+-- found as they load (and by a scan every 30 s); each part is done once.
+-- Only dynamic materials are touched (they belong to that one part), never
+-- shared material assets.
+-- Settings: BuildSnow section of config.lua. Log tag [PF BuildSnow].
 local TAG = "[PF BuildSnow] "
 local function log(msg) print(TAG .. tostring(msg) .. "\n") end
 local LIB = REBALANCE_LIB
@@ -16,7 +20,9 @@ local get, call = LIB.get, LIB.call
 local ROOT = REBALANCE_ROOT or ""
 
 local DEFAULTS = {
-    { "maxMaterials", 40, "how many distinct building materials to log" },
+    { "coverage", 0.9, "snow coverage on built parts (0 = none, vanilla)" },
+    { "falloffOffset", 0.2, "how far the snow reaches down the sides" },
+    { "maskCutoff", 0.05, "snow mask cutoff" },
 }
 local function load_config()
     local cfg = {}
@@ -37,79 +43,16 @@ local function load_config()
 end
 local CFG = load_config()
 
------------------------------------------------------------------- character snow manager
-local manager_done = false
-local function log_manager()
-    if manager_done then return end
-    local helpers = try(function() return require("UEHelpers") end)
-    local pc = helpers and try(function() return helpers.GetPlayerController() end)
-    local pawn = valid(pc) and get(pc, "Pawn")
-    if not valid(pawn) then return end
-    local cls = try(function() return StaticFindObject("/Game/Permafrost/Blueprints/Components/BPC_CharacterSnowManager.BPC_CharacterSnowManager_C") end)
-    if not valid(cls) then cls = try(function() return LoadAsset("/Game/Permafrost/Blueprints/Components/BPC_CharacterSnowManager.BPC_CharacterSnowManager_C") end) end
-    local comp = valid(cls) and call(pawn, "GetComponentByClass", cls)
-    manager_done = true
-    if not valid(comp) then log("character snow manager: not found on the player") return end
-    local parts = {}
-    try(function()
-        cls:ForEachProperty(function(prop)
-            local n = try(function() return prop:GetFName():ToString() end) or "?"
-            local v = get(comp, n)
-            local shown
-            if type(v) == "number" or type(v) == "boolean" then shown = tostring(v)
-            elseif v ~= nil and valid(v) then shown = fname(v)
-            else
-                local t = try(function() return v:ToString() end)
-                shown = t or "(struct)"
-            end
-            parts[#parts + 1] = n .. "=" .. shown
-        end)
-    end)
-    log("character snow manager: " .. table.concat(parts, ", "))
-end
+local PARAMS = {
+    { "Coverage (Snow)", CFG.coverage },
+    { "Falloff Offset (Snow)", CFG.falloffOffset },
+    { "Mask Cutoff (Snow)", CFG.maskCutoff },
+}
 
------------------------------------------------------------------- building materials
-local seen_mats, mat_count = {}, 0
-local queue = {}
-REBALANCE_ON_ACTOR("/Script/Permafrost.BuildPartBase", function(obj)
-    if #queue < 400 then queue[#queue + 1] = LIB.path_of(obj) end
-end)
-
-local mesh_class = nil
-local function parent_chain(mat)
-    local names, m = {}, mat
-    for _ = 1, 6 do
-        names[#names + 1] = fname(m)
-        local p = get(m, "Parent")
-        if not valid(p) then break end
-        m = p
-    end
-    return table.concat(names, " < ")
-end
-local function scalar_params(mat)
-    local out, snow = {}, false
-    local m = mat
-    for _ = 1, 6 do
-        try(function()
-            m.ScalarParameterValues:ForEach(function(_, e)
-                local s = e:get()
-                local n = try(function() return s.ParameterInfo.Name:ToString() end) or "?"
-                local v = tonumber(try(function() return s.ParameterValue end)) or 0
-                out[#out + 1] = string.format("%s=%.2f", n, v)
-                if n:lower():find("snow") then snow = true end
-            end)
-        end)
-        local p = get(m, "Parent")
-        if not valid(p) then break end
-        m = p
-    end
-    return out, snow
-end
-local diag, unresolved = 0, 0
--- K2_GetComponentsByClass gave 0 mesh components on built parts
--- (2026-10-18), but the door showed its mesh as a property (StaticMesh1).
--- So the part's own class properties are walked (3 class levels) and every
--- value that is a mesh component is used, plus the root component.
+------------------------------------------------------------------ parts
+-- K2_GetComponentsByClass gives 0 mesh components on built parts, so the
+-- part's own class properties are walked (3 levels) for mesh components,
+-- plus the root component.
 local function part_meshes(actor)
     local out, seen = {}, {}
     local function add(c)
@@ -140,80 +83,80 @@ local function part_meshes(actor)
     return out
 end
 
-local function log_part(actor)
-    local comps = part_meshes(actor)
-    if diag < 8 then
-        diag = diag + 1
-        local names = {}
-        for _, c in ipairs(comps) do names[#names + 1] = fname(c) .. ":" .. (fname(call(c, "GetClass")) or "?") end
-        log(string.format("part %s: %d mesh components (%s)", fname(actor), #comps, table.concat(names, ", ")))
-    end
-    for _, c in ipairs(comps) do
+local stats = { parts = 0, mats = 0, skipped = 0 }
+local verified = false
+local function snow_part(actor)
+    for _, c in ipairs(part_meshes(actor)) do
         local n = tonumber(call(c, "GetNumMaterials")) or 0
         for i = 0, n - 1 do
-            if mat_count >= CFG.maxMaterials then return end
             local mat = call(c, "GetMaterial", i)
-            local mn = valid(mat) and fname(mat)
-            if mn and not seen_mats[mn] then
-                seen_mats[mn] = true
-                mat_count = mat_count + 1
-                local params, snow = scalar_params(mat)
-                log(string.format("material %d on %s (%s): %s | scalars: %s%s", mat_count, fname(actor), fname(c), parent_chain(mat),
-                    #params > 0 and table.concat(params, ", ") or "none", snow and "  <- HAS SNOW" or ""))
+            if valid(mat) then
+                local cn = fname(call(mat, "GetClass")) or ""
+                if cn == "MaterialInstanceDynamic" then
+                    for _, p in ipairs(PARAMS) do
+                        call(mat, "SetScalarParameterValue", FName(p[1]), p[2])
+                    end
+                    stats.mats = stats.mats + 1
+                    if not verified then
+                        verified = true
+                        local back = call(mat, "K2_GetScalarParameterValue", FName(PARAMS[1][1]))
+                        log(string.format("first part %s (%s): coverage set to %.2f, reads back %s", fname(actor), fname(mat),
+                            PARAMS[1][2], tostring(back)))
+                    end
+                else
+                    stats.skipped = stats.skipped + 1
+                end
             end
         end
     end
+    stats.parts = stats.parts + 1
 end
 
-local settle = os.clock() + 15
-local scanned = false
-local world_at, rescan_at, logged_zero = nil, 0, false
-local queued_once = {}
+------------------------------------------------------------------ loop
+local queue, done = {}, {}
+REBALANCE_ON_ACTOR("/Script/Permafrost.BuildPartBase", function(obj)
+    if #queue < 2000 then queue[#queue + 1] = LIB.path_of(obj) end
+end)
+
+local world_at, rescan_at, reported = nil, 0, -1
 game_loop(1000, function()
-    if os.clock() < settle then return end
+    if CFG.coverage <= 0 then return end
     local ok, err = pcall(function()
-        log_manager()
-        -- Parts loaded from the save BeginPlay before this module watches:
-        -- list the existing ones once (the first run logged none).
-        -- Only once in the world (the first scan ran in the main menu and
-        -- found 0), then again every 60 s for parts loaded since.
         local helpers = try(function() return require("UEHelpers") end)
         local pc = helpers and try(function() return helpers.GetPlayerController() end)
         if not (valid(pc) and valid(get(pc, "Pawn"))) then return end
         world_at = world_at or (os.clock() + 15)
-        if os.clock() >= world_at and os.clock() >= rescan_at then
-            rescan_at = os.clock() + 60
-            scanned = true
-            local n = 0
+        if os.clock() < world_at then return end
+        if os.clock() >= rescan_at then
+            rescan_at = os.clock() + 30
             for _, a in ipairs(try(function() return FindAllOf("BuildPartBase") end) or {}) do
                 local pth = valid(a) and not fname(a):find("^Default__") and LIB.path_of(a)
-                if pth and not queued_once[pth] and #queue < 400 then
-                    queued_once[pth] = true
-                    queue[#queue + 1] = pth
-                    n = n + 1
-                end
-            end
-            if n > 0 or not logged_zero then
-                logged_zero = true
-                log(string.format("built parts found: %d new", n))
+                if pth and not done[pth] and #queue < 2000 then queue[#queue + 1] = pth end
             end
         end
-        if mat_count >= CFG.maxMaterials then queue = {} return end
         local list = queue
         queue = {}
-        for i, p in ipairs(list) do
-            if i > 20 then queue[#queue + 1] = p     -- 20 parts per second at most
-            else
-                local a = LIB.resolve(p)
-                if a then log_part(a)
-                elseif unresolved < 3 then
-                    unresolved = unresolved + 1
-                    log("could not look up built part " .. p)
+        local handled = 0
+        for _, p in ipairs(list) do
+            if p and not done[p] then
+                if handled >= 40 then queue[#queue + 1] = p     -- 40 parts per second at most
+                else
+                    local a = LIB.resolve(p)
+                    if a then
+                        done[p] = true
+                        handled = handled + 1
+                        snow_part(a)
+                    end
                 end
             end
+        end
+        if #queue == 0 and stats.parts ~= reported then
+            reported = stats.parts
+            log(string.format("snow on %d built parts (%d materials set, %d shared materials left alone)",
+                stats.parts, stats.mats, stats.skipped))
         end
     end)
     if not ok then log("error: " .. tostring(err)) end
 end)
 
-log("loaded (discovery only: logs the character snow manager and building materials)")
+log(string.format("loaded: snow coverage %.2f on built parts", CFG.coverage))

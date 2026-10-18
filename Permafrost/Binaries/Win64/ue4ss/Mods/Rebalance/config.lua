@@ -193,6 +193,13 @@ return {
         blizzardShareOfSnow          = 0.6   , -- vanilla -     blizzards never end up more likely than this share of snowfall
     },
 
+    -- BUILD SNOW: Snow on player-built structures, like on the game's own buildings.
+    BuildSnow = {
+        coverage                     = 0.9   , -- vanilla 0     snow coverage on built parts (0 = off)
+        falloffOffset                = 0.2   , -- vanilla -     how far the snow reaches down the sides
+        maskCutoff                   = 0.05  , -- vanilla -     snow mask cutoff
+    },
+
     -- TRAVEL COST: What fast travel costs. Food comes from the hotbar first (highest slot first), then the inventory.
     TravelCost = {
         foodPerTrip                  = 1     , -- vanilla 0     food items one fast travel costs (food and drinks, not medicine)

@@ -111,7 +111,16 @@ Only containers you have not opened yet change. A container that is still locked
 ### hud
 - Health and the stat bars show only when one drops below 25%.
 - The hotbar shows for 2 seconds after you press a hotbar key.
-- The quest box fades 5 seconds after it changes. The compass stays.
+- The quest box fades 12 seconds after it changes. The compass stays.
+
+### buildsnow
+- Snow settles on the tops of your built structures, like on the game's own buildings.
+
+### weather
+- Snowfall is 3x as likely and blizzards 1.75x, with shorter waits between them. Snowfall stays more common than blizzards.
+
+### travelcost
+- Fast travel costs 1 food or drink, taken from the hotbar first (highest slot first), then the inventory. With none on you, the trip is refused.
 
 ### f8log
 - Press F8 to save every lootable around you to `loot_census.txt` with a timestamp. Changes nothing in game.

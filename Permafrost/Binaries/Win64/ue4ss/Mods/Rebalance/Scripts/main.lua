@@ -379,6 +379,7 @@ local SPLIT = {
     { file = "config\\Accuracy.lua",       sections = { "Accuracy" } },
     { file = "config\\Weather.lua",        sections = { "Weather" } },
     { file = "config\\TravelCost.lua",     sections = { "TravelCost" } },
+    { file = "config\\BuildSnow.lua",      sections = { "BuildSnow" } },
     { file = "config\\Containers.lua",       list = "Containers" },
 }
 
