@@ -66,13 +66,6 @@ local PARTS = {
     InvalidationBox_Quests = "quest",
 }
 local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" } }
--- Widgets the game adds to the HUD after it is built (the stat panel and
--- the hotbar slots were missing from the scan, 2026-10-18): found by their
--- own Blueprint class on each pass (a handful of objects, cheap), keeping
--- only those inside the HUD and not inside a menu (their object path names
--- every owning widget).
-local CLASS_PARTS = { health = { "UW_CharStatusPanel_C", "BP_Widget_StatStatus_C" }, hotbar = { "UW_QuickSlot_C" } }
-local MENU_WORDS = { "Menu", "Ledger", "Inventory", "Trading", "Crafting", "Container", "Storage" }
 -- Never walked into: the compass and its markers, the crosshairs.
 local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true }
 
@@ -199,49 +192,6 @@ local function scan(hud)
     return true
 end
 
--- Inside the always-on HUD? Climbs the real parents (GetParent; at a nested
--- widget's root, its WidgetTree's owner) until Canvas_BaseHUD (yes) or the
--- menu canvas / a menu widget (no). Widgets added at runtime are owned by
--- the player controller, so their object path says nothing about the HUD.
-local function in_hud(w)
-    for _ = 1, 40 do
-        local name = fname(w)
-        if name == "Canvas_BaseHUD" then return true end
-        if name == "Canvas_Toggleable" then return false end
-        for _, word in ipairs(MENU_WORDS) do
-            if name:find(word, 1, true) then return false end
-        end
-        local p = call(w, "GetParent")
-        if not valid(p) then
-            local outer = call(w, "GetOuter")
-            if valid(outer) and fname(outer) == "WidgetTree" then p = call(outer, "GetOuter") end
-        end
-        if not valid(p) then return false end
-        w = p
-    end
-    return false
-end
-
--- class_widgets[key] = this pass's widgets of CLASS_PARTS[key] (never kept
--- past the pass).
-local function class_widgets(key)
-    local out = {}
-    for _, cls in ipairs(CLASS_PARTS[key] or {}) do
-        for _, w in ipairs(try(function() return FindAllOf(cls) end) or {}) do
-            if valid(w) and not fname(w):find("^Default__") and in_hud(w) then out[#out + 1] = w end
-        end
-    end
-    return out
-end
-
-local class_logged = {}
-local function note_class(key, list)
-    if CFG.debugLog == 1 and #list > 0 and not class_logged[key] then
-        class_logged[key] = true
-        log(string.format("%s: %d widget(s) in the HUD (%s)", key, #list, table.concat(CLASS_PARTS[key], ", ")))
-    end
-end
-
 -- Lowest ProgressBar fill under a widget (small trees: the stat panel).
 local function lowest_in(w, depth, best)
     if depth > 8 then return best end
@@ -251,42 +201,6 @@ local function lowest_in(w, depth, best)
     end
     each_child(w, function(c) best = lowest_in(c, depth + 1, best) end)
     return best
-end
-
--- One-time census (debugLog 1), 15 s after the HUD appears: every
--- UserWidget whose parent chain reaches Canvas_BaseHUD, by class, with the
--- chain of its first instance. Written to dlls\hud_census.txt so the
--- health and hotbar classes can be pinned down.
-local census_at, census_done = nil, false
-local function chain_of(w)
-    local names = {}
-    for _ = 1, 40 do
-        names[#names + 1] = fname(w)
-        local p = call(w, "GetParent")
-        if not valid(p) then
-            local outer = call(w, "GetOuter")
-            if valid(outer) and fname(outer) == "WidgetTree" then p = call(outer, "GetOuter") end
-        end
-        if not valid(p) then break end
-        w = p
-    end
-    return table.concat(names, " < ")
-end
-local function census()
-    local by_class, first = {}, {}
-    for _, w in ipairs(try(function() return FindAllOf("UserWidget") end) or {}) do
-        if valid(w) and not fname(w):find("^Default__") and in_hud(w) then
-            local c = cls_name(w)
-            by_class[c] = (by_class[c] or 0) + 1
-            first[c] = first[c] or chain_of(w)
-        end
-    end
-    local lines = {}
-    for c, n in pairs(by_class) do lines[#lines + 1] = string.format("%-40s x%-3d %s", c, n, first[c]) end
-    table.sort(lines)
-    local f = io.open(ROOT .. "dlls\\hud_census.txt", "w")
-    if f then f:write(table.concat(lines, "\n") .. "\n") f:close() end
-    log(string.format("HUD census: %d widget types on the HUD -> dlls\\hud_census.txt", #lines))
 end
 
 ------------------------------------------------------------------ rules
@@ -335,9 +249,10 @@ local function decide(hud)
             local pct = b and tonumber(get(b, "Percent"))
             if pct then low = math.min(low or 1, pct) end
         end
-        local panels = class_widgets("health")
-        note_class("health", panels)
-        for _, w in ipairs(panels) do low = lowest_in(w, 0, low) end
+        for _, e in ipairs(routes.health) do
+            local w = follow(hud, e.route)
+            if w then low = lowest_in(w, 0, low) end
+        end
         targets.health = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
     end
     local pc = player_pc()
@@ -401,28 +316,6 @@ local function fade(hud)
                 local w = follow(hud, e.route)
                 if w then call(w, "SetRenderOpacity", shown) end
             end
-            local extra = class_widgets(key)
-            note_class(key, extra)
-            for _, w in ipairs(extra) do call(w, "SetRenderOpacity", shown) end
-        end
-    end
-end
-
------------------------------------------------------------------- menus (hover info prep)
--- Which top-level screens open (inventory etc.), for the planned hover item
--- info. FindAllOf("UserWidget") is heavy: every 10 s, first 5 minutes only.
-local seen_widgets, menu_runs, menu_at = {}, 0, 0
-local function log_menus(now)
-    if CFG.debugLog ~= 1 or menu_runs >= 30 or now < menu_at then return end
-    menu_at = now + 10
-    menu_runs = menu_runs + 1
-    for _, w in ipairs(try(function() return FindAllOf("UserWidget") end) or {}) do
-        if valid(w) and call(w, "IsInViewport") == true then
-            local c = cls_name(w)
-            if not seen_widgets[c] then
-                seen_widgets[c] = true
-                log("screen widget: " .. c)
-            end
         end
     end
 end
@@ -430,6 +323,7 @@ end
 ------------------------------------------------------------------ loop
 -- Rules every 100 ms; fade steps every 50 ms only while something fades.
 local scan_at, errors, odd = 0, 0, false
+local seen_addr, settle_until = nil, 0
 game_loop(STEP_MS, function()
     local ok, err = pcall(function()
         odd = not odd
@@ -439,6 +333,8 @@ game_loop(STEP_MS, function()
         local hud = find_hud()
         if not hud then hud_addr = nil return end
         local a = LIB.address(hud)
+        if a ~= seen_addr then seen_addr, settle_until = a, now + 10 end
+        if now < settle_until then return end
         if a ~= hud_addr or now >= scan_at then
             if a ~= hud_addr then
                 if not scan(hud) then return end
@@ -447,11 +343,6 @@ game_loop(STEP_MS, function()
                 for k in pairs(opacity) do opacity[k] = 1 end
             end
             scan_at = now + 3
-            log_menus(now)
-        end
-        if CFG.debugLog == 1 and not census_done then
-            census_at = census_at or (now + 15)
-            if now >= census_at then census_done = true pcall(census) end
         end
         if not odd then decide(hud) end
         fade(hud)
