@@ -29,7 +29,7 @@ return {
         buildsnow                  = 1     , -- Scripts/buildsnow.lua        snow on player-built structures (now: discovery only, logs, changes nothing)
         warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
         weather                    = 1     , -- Scripts/weather.lua          storms and snowfall come more often
-        bedtravel                  = 1     , -- Scripts/bedtravel.lua        fast travel on the map to your beds (experimental)
+        travelcost                 = 1     , -- Scripts/travelcost.lua       fast travel costs food (hotbar first)
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
     },
@@ -190,6 +190,12 @@ return {
         snowChanceMultiplier         = 3.0   , -- vanilla 1.0   how much more likely snowfall (and snowstorms) is
         snowCooldownMultiplier       = 0.5   , -- vanilla 1.0   how much shorter the wait between snowfalls is
         blizzardShareOfSnow          = 0.6   , -- vanilla -     blizzards never end up more likely than this share of snowfall
+    },
+
+    -- TRAVEL COST: What fast travel costs. Food comes from the hotbar first (highest slot first), then the inventory.
+    TravelCost = {
+        foodPerTrip                  = 1     , -- vanilla 0     food items one fast travel costs (food and drinks, not medicine)
+        hotbarSlots                  = 8     , -- vanilla -     number of hotbar slots
     },
 
     -- RECIPES: Crafting and repair costs.
