@@ -10,10 +10,10 @@
 -- How:
 --  * Each bed gets a runtime UFastTravelComponent, activated (runtime
 --    components are not saved, so this runs every session).
---  * The key (travelKey, default T) while a bed is within reach in front of
+--  * The key (travelKey, default X) while a bed is within reach in front of
 --    you asks that component for a trip (TravelRequest): the game opens the
 --    fast travel map for the bed (worked 2026-10-18).
---  * While the interaction prompt's title names a bed, a "Press T  Fast
+--  * While the interaction prompt's title names a bed, a "Press X  Fast
 --    travel" line is added to its hint list.
 --  * Every autosave is logged (and whether a bed trip is under way).
 -- Settings: BedTravel section of config.lua. Log tag [PF BedTravel].
@@ -26,7 +26,7 @@ local ROOT = REBALANCE_ROOT or ""
 
 local DEFAULTS = {
     { "sleepingBags", 0, "1 = sleeping bags count as beds too" },
-    { "travelKey", "T", "key that opens fast travel while you look at a bed" },
+    { "travelKey", "X", "key that opens fast travel while you look at a bed" },
     { "reachMetres", 3, "how close the bed must be" },
 }
 local function load_config()
@@ -303,7 +303,7 @@ local save_hooked = try(function()
 end)
 
 ------------------------------------------------------------------ loops
-local key = Key[CFG.travelKey] or Key.T
+local key = Key[CFG.travelKey] or Key.X
 RegisterKeyBind(key, function()
     ExecuteInGameThread(function()
         local ok, err = pcall(function()
