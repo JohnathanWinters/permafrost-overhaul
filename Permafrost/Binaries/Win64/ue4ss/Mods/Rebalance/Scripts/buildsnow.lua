@@ -54,7 +54,7 @@ local PARAMS = {
 
 ------------------------------------------------------------------ parts
 -- K2_GetComponentsByClass gives 0 mesh components on built parts, so the
--- part's own class properties are walked (3 levels) for mesh components,
+-- part's own class properties are walked for mesh components,
 -- plus the root component.
 local function part_meshes(actor)
     local out, seen = {}, {}
@@ -69,8 +69,15 @@ local function part_meshes(actor)
         end
     end
     add(get(actor, "RootComponent"))
+    -- Components the blueprint created (the stove and torch bodies were
+    -- missed by the 3-level walk, 2026-10-18), then 8 class levels.
+    for _, field in ipairs({ "BlueprintCreatedComponents", "InstanceComponents" }) do
+        try(function()
+            actor[field]:ForEach(function(_, e) try(function() add(e:get()) end) end)
+        end)
+    end
     local cls = call(actor, "GetClass")
-    for _ = 1, 3 do
+    for _ = 1, 8 do
         if not valid(cls) then break end
         try(function()
             cls:ForEachProperty(function(prop)
