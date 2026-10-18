@@ -90,7 +90,17 @@ local function rand(a, b)
     return math.random(math.floor(a), math.floor(b))
 end
 
-local function process_container(a)
+-- A container that was still locked when first seen has never been looted
+-- (user 2026-10-18): it is always untouched. Once opened it is decided and
+-- never touched again, so it stays empty after you take the loot.
+local padlock_class = nil
+local function is_locked(a)
+    padlock_class = padlock_class or try(function() return StaticFindObject("/Script/Permafrost.Padlock") end)
+    local lock = valid(padlock_class) and try(function() return a:GetComponentByClass(padlock_class) end)
+    return valid(lock) and try(function() return lock.bLocked end) == true
+end
+
+local function process_container(a, was_locked)
     local cls = try(function() return a:GetClass():GetFName():ToString() end) or "?"
     local profile = rules.profile_for(PROFILES, cls)
     if not profile then return end
@@ -98,7 +108,7 @@ local function process_container(a)
     if not valid(inv) then return end
     local before = inv_items(inv)
     local sig = items_sig(before)
-    local untouched = math.random() < (profile.untouched or 1)
+    local untouched = was_locked or math.random() < (profile.untouched or 1)
     if not untouched then
         try(function() inv:ClearInventory() end)
         stats_c.looted = stats_c.looted + 1
@@ -129,7 +139,7 @@ local function process_container(a)
     if cont_logged < 25 then
         cont_logged = cont_logged + 1
         log(string.format("container %s (%s): %s; before [%s] after [%s]", cls, profile.name,
-            untouched and "UNTOUCHED" or "looted", sig, after))
+            was_locked and "UNTOUCHED (was locked)" or (untouched and "UNTOUCHED" or "looted"), sig, after))
     end
 end
 
@@ -161,7 +171,7 @@ local function consider(a, name)
         -- Plain numbers: a struct returned by a game call must not be kept
         -- past the call (suspected cause of a crash inside UE4SS, 2026-10-17).
         local v = LIB.call(a, "K2_GetActorLocation")
-        watch[name] = { loc = v and { X = v.X, Y = v.Y, Z = v.Z } or nil }
+        watch[name] = { loc = v and { X = v.X, Y = v.Y, Z = v.Z } or nil, locked = is_locked(a) }
     end
 end
 local first_scan = true
@@ -232,7 +242,7 @@ local function open_watch()
                 if has or (opened and w.ticks >= 100) then
                     watch[name] = nil
                     ignored[name] = true
-                    local ok, err = pcall(process_container, actor)
+                    local ok, err = pcall(process_container, actor, w.locked)
                     if not ok then log("container error: " .. tostring(err)) end
                 end
             end

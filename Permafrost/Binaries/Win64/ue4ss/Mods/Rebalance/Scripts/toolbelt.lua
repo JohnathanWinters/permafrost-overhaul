@@ -27,8 +27,8 @@ local DEFAULTS = {
     { "pickaxe",         0, 0, "pickaxe" },
     { "key",             0, 0, "keys: locked doors and containers" },
     { "anyKnifeTier",    1, 0, "1 = any knife opens what needs a knife; a lower tier costs durability" },
-    { "knifeBaseCost",   2, 0, "durability % an under-tier knife uses per opening" },
-    { "knifeCostPerTier", 8, 0, "extra durability % per tier step the knife is below the requirement" },
+    { "knifeBaseCost",   0, 0, "durability % an under-tier knife uses per opening" },
+    { "knifeCostPerTier", 0, 0, "extra durability % per tier step the knife is below the requirement" },
     { "hotbarUnlockSeconds", 2, 0, "holding the interact key this long opens a knife lock with a knife in the hotbar" },
 }
 local function load_config()
@@ -300,7 +300,9 @@ end
 -- UPadlock::TryToUnlock(ToolType, ToolTier, Damage) on the lock component,
 -- which checks type and tier again (2026-10-17: prompt said unlock, nothing
 -- happened with a low-tier knife). Same decision, on the lock's owner.
+local self_unlock = false        -- set while hotbar_unlock calls TryToUnlock itself
 local function on_unlock(padlock_p, type_p, tier_p)
+    if self_unlock then return end
     local padlock = try(function() return padlock_p:get() end)
     if not valid(padlock) then return end
     decide(try(function() return padlock:GetOwner() end), type_p, tier_p, padlock, "unlock")
@@ -433,7 +435,9 @@ local function hotbar_unlock()
     local max = tonumber(LIB.get(best, "MaxLockDurability")) or 100
     local seconds = math.max(0.2, tonumber(CFG.hotbarUnlockSeconds) or 2)
     local damage = math.max(0.01, max / (seconds * 10))     -- this loop runs 10 times a second
+    self_unlock = true
     local opened = LIB.call(best, "TryToUnlock", TOOL.knife, 255, damage)
+    self_unlock = false
     if unlock_logged < 10 then
         unlock_logged = unlock_logged + 1
         log(string.format("hotbar knife on %s: lock %.0f/%.0f%s", fname(LIB.call(best, "GetOwner")),

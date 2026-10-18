@@ -66,6 +66,13 @@ local PARTS = {
     InvalidationBox_Quests = "quest",
 }
 local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" } }
+-- Widgets the game adds to the HUD after it is built (the stat panel and
+-- the hotbar slots were missing from the scan, 2026-10-18): found by their
+-- own Blueprint class on each pass (a handful of objects, cheap), keeping
+-- only those inside the HUD and not inside a menu (their object path names
+-- every owning widget).
+local CLASS_PARTS = { health = "UW_CharStatusPanel_C", hotbar = "UW_QuickSlot_C" }
+local MENU_WORDS = { "Menu", "Ledger", "Inventory", "Trading", "Crafting", "Container", "Storage" }
 -- Never walked into: the compass and its markers, the crosshairs.
 local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true }
 
@@ -192,6 +199,60 @@ local function scan(hud)
     return true
 end
 
+-- Inside the always-on HUD? Climbs the real parents (GetParent; at a nested
+-- widget's root, its WidgetTree's owner) until Canvas_BaseHUD (yes) or the
+-- menu canvas / a menu widget (no). Widgets added at runtime are owned by
+-- the player controller, so their object path says nothing about the HUD.
+local function in_hud(w)
+    for _ = 1, 40 do
+        local name = fname(w)
+        if name == "Canvas_BaseHUD" then return true end
+        if name == "Canvas_Toggleable" then return false end
+        for _, word in ipairs(MENU_WORDS) do
+            if name:find(word, 1, true) then return false end
+        end
+        local p = call(w, "GetParent")
+        if not valid(p) then
+            local outer = call(w, "GetOuter")
+            if valid(outer) and fname(outer) == "WidgetTree" then p = call(outer, "GetOuter") end
+        end
+        if not valid(p) then return false end
+        w = p
+    end
+    return false
+end
+
+-- class_widgets[key] = this pass's widgets of CLASS_PARTS[key] (never kept
+-- past the pass).
+local function class_widgets(key)
+    local cls = CLASS_PARTS[key]
+    if not cls then return {} end
+    local out = {}
+    for _, w in ipairs(try(function() return FindAllOf(cls) end) or {}) do
+        if valid(w) and not fname(w):find("^Default__") and in_hud(w) then out[#out + 1] = w end
+    end
+    return out
+end
+
+local class_logged = {}
+local function note_class(key, list)
+    if CFG.debugLog == 1 and #list > 0 and not class_logged[key] then
+        class_logged[key] = true
+        log(string.format("%s: %d %s in the HUD", key, #list, CLASS_PARTS[key]))
+    end
+end
+
+-- Lowest ProgressBar fill under a widget (small trees: the stat panel).
+local function lowest_in(w, depth, best)
+    if depth > 8 then return best end
+    if cls_name(w):find("ProgressBar") then
+        local pct = tonumber(get(w, "Percent"))
+        if pct then best = math.min(best or 1, pct) end
+    end
+    each_child(w, function(c) best = lowest_in(c, depth + 1, best) end)
+    return best
+end
+
 ------------------------------------------------------------------ rules
 local HOTBAR_KEYS = { "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }
 local hotbar_structs = nil
@@ -231,18 +292,21 @@ local function decide(hud)
     ticks = ticks + 1
     -- Health area (every 0.5 s): shown while a bar is low. No bars found:
     -- it stays shown (it may hold the game's own warning icons).
-    if ticks % 5 == 0 and #routes.health > 0 then
+    if ticks % 5 == 0 then
         local low = nil
         for _, r in ipairs(bars) do
             local b = follow(hud, r)
             local pct = b and tonumber(get(b, "Percent"))
             if pct then low = math.min(low or 1, pct) end
         end
+        local panels = class_widgets("health")
+        note_class("health", panels)
+        for _, w in ipairs(panels) do low = lowest_in(w, 0, low) end
         targets.health = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
     end
     local pc = player_pc()
     -- Hotbar: any number key.
-    if pc and #routes.hotbar > 0 then
+    if pc then
         if not hotbar_structs then
             hotbar_structs = {}
             for _, k in ipairs(HOTBAR_KEYS) do hotbar_structs[#hotbar_structs + 1] = { KeyName = FName(k) } end
@@ -301,6 +365,9 @@ local function fade(hud)
                 local w = follow(hud, e.route)
                 if w then call(w, "SetRenderOpacity", shown) end
             end
+            local extra = class_widgets(key)
+            note_class(key, extra)
+            for _, w in ipairs(extra) do call(w, "SetRenderOpacity", shown) end
         end
     end
 end
