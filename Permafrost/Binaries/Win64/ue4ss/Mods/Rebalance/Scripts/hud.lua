@@ -162,6 +162,7 @@ local quest_texts = {}    -- routes of TextBlocks inside the quest parts
 local hud_addr = nil
 local dumped = false
 
+local ledger_parts   -- defined in scan
 local function scan(hud)
     if not find_base(hud) then return false end   -- HUD not built yet
     routes = { health = {}, hotbar = {}, quest = {}, weapon = {}, menu = {} }
@@ -176,6 +177,29 @@ local function scan(hud)
             inner(c, depth + 1, r, out, kind)
         end)
     end
+    -- The bottom-left stat diamonds and the bottom-right toolbelt are part of
+    -- the inventory screen (UW_LedgerMenu), which stays on screen with only
+    -- those two showing during play (the very first HUD version matched
+    -- them there and both hid, user 2026-10-18). Only these names are taken
+    -- from inside the menu.
+    local LEDGER = { SizeBox_Stats = "health", QuickSlots = "hotbar" }
+    function ledger_parts(menu, base)
+        local function find(w, depth, route)
+            if depth > 16 then return end
+            local n = fname(w)
+            local g = LEDGER[n]
+            if g then
+                routes[g][#routes[g] + 1] = { route = route, name = n }
+                return
+            end
+            each_child(w, function(c, i)
+                local r = { table.unpack(route) }
+                r[#r + 1] = i
+                find(c, depth + 1, r)
+            end)
+        end
+        find(menu, 0, base)
+    end
     local function rec(w, depth, route)
         if depth > 12 then return end
         local name = fname(w)
@@ -189,6 +213,7 @@ local function scan(hud)
             list[#list + 1] = { route = route, name = name }
             if g == "health" then inner(w, 0, route, bars, "ProgressBar") end
             if g == "quest" then inner(w, 0, route, quest_texts, "TextBlock") end
+            if g == "menu" then ledger_parts(w, route) end
             return
         end
         if NO_WALK[name] or cls:find("Menu", 1, true) or cls:find("Radial", 1, true) then return end
