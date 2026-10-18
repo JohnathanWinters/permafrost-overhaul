@@ -286,6 +286,9 @@ local function add_lines(cw, cw_route)
         local slot = valid(img) and call(canvas, "AddChildToCanvas", img)
         if valid(slot) then
             call(img, "SetColorAndOpacity", color)
+            -- Never catch the mouse (ESlateVisibility HitTestInvisible = 3):
+            -- radial menus like the bed's are steered around screen centre.
+            call(img, "SetVisibility", 3)
             call(slot, "SetAnchors", { Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } })
             call(slot, "SetAlignment", { X = 0.5, Y = 0.5 })
             local w, h = CFG.reticleThickness, CFG.reticleLength

@@ -131,22 +131,36 @@ end
 
 local settle = os.clock() + 15
 local scanned = false
+local world_at, rescan_at, logged_zero = nil, 0, false
+local queued_once = {}
 game_loop(1000, function()
     if os.clock() < settle then return end
     local ok, err = pcall(function()
         log_manager()
         -- Parts loaded from the save BeginPlay before this module watches:
         -- list the existing ones once (the first run logged none).
-        if not scanned then
+        -- Only once in the world (the first scan ran in the main menu and
+        -- found 0), then again every 60 s for parts loaded since.
+        local helpers = try(function() return require("UEHelpers") end)
+        local pc = helpers and try(function() return helpers.GetPlayerController() end)
+        if not (valid(pc) and valid(get(pc, "Pawn"))) then return end
+        world_at = world_at or (os.clock() + 15)
+        if os.clock() >= world_at and os.clock() >= rescan_at then
+            rescan_at = os.clock() + 60
             scanned = true
             local n = 0
             for _, a in ipairs(try(function() return FindAllOf("BuildPartBase") end) or {}) do
-                if valid(a) and not fname(a):find("^Default__") and #queue < 400 then
-                    queue[#queue + 1] = LIB.path_of(a)
+                local pth = valid(a) and not fname(a):find("^Default__") and LIB.path_of(a)
+                if pth and not queued_once[pth] and #queue < 400 then
+                    queued_once[pth] = true
+                    queue[#queue + 1] = pth
                     n = n + 1
                 end
             end
-            log(string.format("built parts in the world: %d", n))
+            if n > 0 or not logged_zero then
+                logged_zero = true
+                log(string.format("built parts found: %d new", n))
+            end
         end
         if mat_count >= CFG.maxMaterials then queue = {} return end
         local list = queue

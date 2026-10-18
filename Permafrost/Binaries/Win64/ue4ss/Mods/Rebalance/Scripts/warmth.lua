@@ -27,20 +27,35 @@ end
 
 local helpers = nil
 local lines, last_warmth, last_t = 0, nil, nil
+local listed = false
 local function pass()
     if lines >= 60 then return end
     helpers = helpers or try(function() return require("UEHelpers") end)
     local pc = helpers and try(function() return helpers.GetPlayerController() end)
     local pawn = valid(pc) and get(pc, "Pawn")
     if not valid(pawn) then return end
-    local pname = fname(pawn)
-    -- The player's set: its full path names the player's pawn.
-    local set = nil
+    -- The player's set: its full path names the pawn or the player state
+    -- (stats often live on the player state, 2026-10-18).
+    local names = { fname(pawn) }
+    local ps = get(pc, "PlayerState")
+    if valid(ps) then names[#names + 1] = fname(ps) end
+    local set, all = nil, {}
     for _, s in ipairs(try(function() return FindAllOf("AttributeSet_TemperatureMetrics") end) or {}) do
-        if valid(s) and LIB.path_of(s):find(pname, 1, true) then set = s break end
+        if valid(s) and not fname(s):find("^Default__") then
+            local p = LIB.path_of(s)
+            all[#all + 1] = p
+            for _, n in ipairs(names) do
+                if p:find(n, 1, true) then set = s end
+            end
+            if set then break end
+        end
     end
     if not set then
-        if lines == 0 then log("player's temperature set not found yet") lines = 1 end
+        if not listed then
+            listed = true
+            log("player's temperature set not found under " .. table.concat(names, " / ") .. "; sets: "
+                .. (#all > 0 and table.concat(all, " ; ", 1, math.min(#all, 5)) or "none"))
+        end
         return
     end
     local parts = {}
