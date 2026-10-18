@@ -184,10 +184,11 @@ return {
 
     -- WEATHER: How often storms come. 1.0 = vanilla.
     Weather = {
-        blizzardChanceMultiplier     = 2.5   , -- vanilla 1.0   how much more likely blizzards are
-        blizzardCooldownMultiplier   = 0.5   , -- vanilla 1.0   how much shorter the wait between blizzards is
-        snowChanceMultiplier         = 1.5   , -- vanilla 1.0   how much more likely snowfall (and snowstorms) is
-        snowCooldownMultiplier       = 0.75  , -- vanilla 1.0   how much shorter the wait between snowfalls is
+        blizzardChanceMultiplier     = 1.75  , -- vanilla 1.0   how much more likely blizzards are
+        blizzardCooldownMultiplier   = 0.7   , -- vanilla 1.0   how much shorter the wait between blizzards is
+        snowChanceMultiplier         = 3.0   , -- vanilla 1.0   how much more likely snowfall (and snowstorms) is
+        snowCooldownMultiplier       = 0.5   , -- vanilla 1.0   how much shorter the wait between snowfalls is
+        blizzardShareOfSnow          = 0.6   , -- vanilla -     blizzards never end up more likely than this share of snowfall
     },
 
     -- RECIPES: Crafting and repair costs.

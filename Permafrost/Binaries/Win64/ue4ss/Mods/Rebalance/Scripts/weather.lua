@@ -15,10 +15,11 @@ local get = LIB.get
 local ROOT = REBALANCE_ROOT or ""
 
 local DEFAULTS = {
-    { "blizzardChanceMultiplier",   2.5, "how much more likely blizzards are" },
-    { "blizzardCooldownMultiplier", 0.5, "how much shorter the wait between blizzards is" },
-    { "snowChanceMultiplier",       1.5, "how much more likely snowfall (and snowstorms) is" },
-    { "snowCooldownMultiplier",     0.75, "how much shorter the wait between snowfalls is" },
+    { "blizzardChanceMultiplier",   1.75, "how much more likely blizzards are" },
+    { "blizzardCooldownMultiplier", 0.7,  "how much shorter the wait between blizzards is" },
+    { "snowChanceMultiplier",       3.0,  "how much more likely snowfall (and snowstorms) is" },
+    { "snowCooldownMultiplier",     0.5,  "how much shorter the wait between snowfalls is" },
+    { "blizzardShareOfSnow",        0.6,  "blizzards never end up more likely than this share of snowfall" },
 }
 local function load_config()
     local cfg = {}
@@ -63,6 +64,24 @@ local function write_num(st, f, sub, value)
 end
 
 local done = {}   -- asset address -> true
+-- Snow must stay more common than blizzards (user 2026-10-18): once both
+-- are known, a blizzard chance above blizzardShareOfSnow x snow chance is
+-- lowered to it, but never below 1.2 x its vanilla chance.
+local final = {}  -- name -> { path, sub, vanilla, now } (the asset path, never a kept struct)
+local function keep_snow_ahead()
+    local b, s = final.Blizzard, final.Snow
+    if not (b and s and b.now and s.now) or b.checked then return end
+    b.checked = true
+    local cap = s.now * CFG.blizzardShareOfSnow
+    if b.now > cap then
+        local target = math.max(cap, (b.vanilla or 0) * 1.2)
+        local cond = LIB.resolve(b.path)
+        local req = cond and get(cond, "Requirements")
+        if not req then return end
+        write_num(req, "Probability", b.sub, target)
+        log(string.format("Blizzard chance %.4f lowered to %.4f so snow (%.4f) stays more common", b.now, target, s.now))
+    end
+end
 local function apply(cond)
     local a = LIB.address(cond)
     local name = fname(cond)
@@ -87,6 +106,10 @@ local function apply(cond)
     local nc_now = read_num(req, "Cooldown")
     log(string.format("%s: chance %s -> %s, cooldown %s -> %s", name, tostring(p), tostring(np_now), tostring(c),
         tostring(nc_now)))
+    if rule then
+        final[name] = { path = LIB.path_of(cond), sub = psub, vanilla = p, now = np_now }
+        keep_snow_ahead()
+    end
 end
 
 REBALANCE_ON_ASSET("Data_WeatherCondition", function(obj)
