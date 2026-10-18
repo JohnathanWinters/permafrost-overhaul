@@ -26,11 +26,11 @@ return {
         recipes                    = 1     , -- Scripts/recipes.lua          Makeshift Heater needs and repairs with chemicals
         food                       = 1     , -- Scripts/food.lua             food and drinks do not heal
         hud                        = 1     , -- Scripts/hud.lua              HUD parts fade out until needed
-        buildsnow                  = 1     , -- Scripts/buildsnow.lua        snow on player-built structures (now: discovery only, logs, changes nothing)
+        buildsnow                  = 1     , -- Scripts/buildsnow.lua        snow on your built structures where open to the sky
         warmth                     = 1     , -- Scripts/warmth.lua           heat loss that follows your clothing vs the cold (now: logging only, changes nothing)
         weather                    = 1     , -- Scripts/weather.lua          storms and snowfall come more often
         travelcost                 = 1     , -- Scripts/travelcost.lua       fast travel costs food (hotbar first)
-        bedtravel                  = 1     , -- Scripts/bedtravel.lua        fast travel on the map to your beds
+        bedtravel                  = 1     , -- Scripts/bedtravel.lua        look at your bed and press a key to fast travel
         doors                      = 1     , -- Scripts/doors.lua            doors and shutters keep their state across saves (now: discovery only)
         f8log                      = 1     , -- Scripts/f8log.lua            F8 loot logger (research tool, changes nothing)
         diagnostics                = 1     , -- (main.lua, main.dll)         profiler, flight recorder and crash report in dlls; 0 = off
@@ -165,7 +165,7 @@ return {
         debugLog                     = 1     , -- vanilla -     1 = log what was found
     },
 
-    -- ACCURACY: Extra spread on your shots on top of each gun's own. Degrees. The crosshair grows and shrinks with it.
+    -- ACCURACY: Extra spread on your shots on top of each gun's own. Degrees. The crosshair lines open up with it.
     Accuracy = {
         moveSpreadDeg                = 2.0   , -- vanilla 0     extra spread at a full sprint (walking adds part of it)
         airSpreadDeg                 = 3.0   , -- vanilla 0     extra spread while jumping or falling
@@ -276,7 +276,7 @@ return {
         axe                        = 0     , -- vanilla 0     axe
         pickaxe                    = 0     , -- vanilla 0     pickaxe
         key                        = 0     , -- vanilla 0     keys
-        anyKnifeTier               = 1     , -- vanilla 0     1 = any knife opens what needs a knife; a lower tier costs durability
+        anyKnifeTier               = 1     , -- vanilla 0     1 = any knife opens what needs a knife
         knifeBaseCost              = 0     , -- vanilla -     durability % an under-tier knife uses per opening
         knifeCostPerTier           = 0     , -- vanilla -     extra durability % per tier step the knife is short (refined counts as a step)
         hotbarUnlockSeconds        = 1     , -- vanilla -     hold the interact key this long to open a knife lock with a knife in your hotbar (knife durability not used)
