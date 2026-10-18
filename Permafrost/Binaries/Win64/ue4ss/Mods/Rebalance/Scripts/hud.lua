@@ -364,8 +364,8 @@ local function decide(hud)
         local want = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
         -- Logged on each change: which stat keeps the health area shown
         -- (user 2026-10-18: it stopped hiding; 0 bars were found).
-        if want ~= targets.health or health_logged == nil then
-            health_logged = true
+        if want ~= health_logged then
+            health_logged = want
             log(want == 1 and string.format("health area shown: lowest %s from %s", low and string.format("%.0f%%", low * 100) or "nothing readable", tostring(src))
                 or string.format("health area hidden: lowest %.0f%% (%s)", (low or 1) * 100, tostring(src)))
         end

@@ -8,20 +8,14 @@
 --  * bed trips cost food like any trip (they do: the cost is taken in
 --    main.dll's TravelTo detour, which every map trip goes through).
 -- How:
---  * Beds become travel points: each BP_PermaBed gets a runtime
---    UFastTravelComponent with the game's Home name asset (PDA_FT_Home),
---    then ActivateFastTravelComponent registers it. Runtime components are
---    not saved, so this runs every session. First run (2026-10-18): the
---    component was added but the name asset did not stick and the manager
---    listed 0 points, so this version logs the component's and the
---    manager's properties to fix that.
---  * The key (travelKey, default T) while a bed is within 3 m in front of
---    you opens the fast travel map through the game's own
---    UI_ManagerComponent:CLIENT_OpenFastTravelMap (what the travel lamp
---    uses).
---  * Discovery for the next steps: every autosave is logged (and whether a
---    bed trip is under way), and the interaction prompt's widget layout is
---    logged once while you look at a bed.
+--  * Each bed gets a runtime UFastTravelComponent, activated (runtime
+--    components are not saved, so this runs every session).
+--  * The key (travelKey, default T) while a bed is within reach in front of
+--    you asks that component for a trip (TravelRequest): the game opens the
+--    fast travel map for the bed (worked 2026-10-18).
+--  * While the interaction prompt's title names a bed, a "Press T  Fast
+--    travel" line is added to its hint list.
+--  * Every autosave is logged (and whether a bed trip is under way).
 -- Settings: BedTravel section of config.lua. Log tag [PF BedTravel].
 local TAG = "[PF BedTravel] "
 local function log(msg) print(TAG .. tostring(msg) .. "\n") end
@@ -209,147 +203,95 @@ local function bed_in_view(pc, pawn)
 end
 
 ------------------------------------------------------------------ open the map
--- CLIENT_OpenFastTravelMap(MarkerID: FName) needs the map marker of the
--- travel point you are at: with an empty name nothing opened (2026-10-18).
--- The beds are not registered points yet, so the marker the travel lamp
--- uses is learned: a hook logs every map opening and keeps its MarkerID
--- (dlls\bed_marker.txt, so it survives restarts). Beds then open the map
--- with that marker; the trip itself goes wherever you pick.
-local MARKER_FILE = ROOT .. "dlls\\bed_marker.txt"
-local known_marker = nil
-do
-    local f = io.open(MARKER_FILE, "r")
-    if f then
-        local t = f:read("*l")
-        f:close()
-        if t and t ~= "" and t ~= "None" then known_marker = t end
-    end
-end
-local own_call = false
-local open_hooked = try(function()
-    RegisterHook("/Script/Permafrost.UI_ManagerComponent:CLIENT_OpenFastTravelMap", function(_, marker)
-        local m = try(function() return marker:get():ToString() end) or "?"
-        log(string.format("fast travel map opened by %s with marker '%s'", own_call and "a bed" or "the game", m))
-        if not own_call and m ~= "" and m ~= "None" and m ~= "?" and m ~= known_marker then
-            known_marker = m
-            local f = io.open(MARKER_FILE, "w")
-            if f then f:write(m .. "\n") f:close() end
-            log("remembered travel marker '" .. m .. "' for beds")
-        end
-    end)
-    return true
-end)
-
+-- The bed's own travel component is asked for a trip (TravelRequest with
+-- the player controller): the game then opens the fast travel map for
+-- that bed, and the trip costs food like any other (worked 2026-10-18).
+-- (Opening the map with an empty or remembered marker did nothing: the
+-- marker is the bed's runtime name, new every session.)
 local bed_trip_until = 0
-local warned_no_marker = false
-local fn_params = {}
--- Parameters of a UFunction as { name, property class } (logged once).
-local function params_of(path)
-    if fn_params[path] then return fn_params[path] end
-    local list = {}
-    local fn = try(function() return StaticFindObject(path) end)
-    if valid(fn) then
-        try(function()
-            fn:ForEachProperty(function(prop)
-                list[#list + 1] = { try(function() return prop:GetFName():ToString() end) or "?",
-                                    try(function() return prop:GetClass():GetFName():ToString() end) or "?" }
-            end)
-        end)
-    end
-    local shown = {}
-    for _, e in ipairs(list) do shown[#shown + 1] = e[1] .. ":" .. e[2] end
-    log(path:match("[^.:]+$") .. " takes: " .. (#shown > 0 and table.concat(shown, ", ") or "nothing readable"))
-    fn_params[path] = list
-    return list
-end
-
--- No lamp marker known: the bed's own travel component is asked to start
--- a trip (TravelRequest, what a travel point does when used), with the
--- player controller or pawn for object parameters.
-local world_map_described = false
-local function request_from_component(pc, pawn, bed)
+local function open_map(pc, bed)
     ft_class = ft_class or try(function() return StaticFindObject("/Script/Permafrost.FastTravelComponent") end)
     local comp = valid(ft_class) and call(bed, "GetComponentByClass", ft_class)
-    if not valid(comp) then log("bed has no travel component (yet)") return end
-    local args = {}
-    for _, e in ipairs(params_of("/Script/Permafrost.FastTravelComponent:TravelRequest")) do
-        if e[1] ~= "ReturnValue" then
-            if e[2] == "ObjectProperty" then
-                args[#args + 1] = e[1]:lower():find("controller") and pc or pawn
-            elseif e[2] == "BoolProperty" then args[#args + 1] = true
-            elseif e[2] == "NameProperty" then args[#args + 1] = FName("None")
-            else args[#args + 1] = 0 end
-        end
+    if not valid(comp) then
+        pcall(make_travel_point, bed)
+        comp = valid(ft_class) and call(bed, "GetComponentByClass", ft_class)
     end
-    local ok, err = pcall(function() comp:TravelRequest(table.unpack(args)) end)
-    log(string.format("asked %s's travel component for a trip (%d args): %s", fname(bed), #args, ok and "ok" or tostring(err)))
-    if not world_map_described then
-        world_map_described = true
-        for _, m in ipairs(try(function() return FindAllOf("WorldMapManager") end) or {}) do
-            if valid(m) and not fname(m):find("^Default__") then describe("world map manager", m) break end
-        end
-    end
+    if not valid(comp) then log("bed has no travel component: " .. fname(bed)) return end
+    local ok, err = pcall(function() comp:TravelRequest(pc) end)
+    bed_trip_until = os.clock() + 180
+    log(string.format("fast travel from %s: %s", fname(bed), ok and "map opened" or tostring(err)))
 end
 
-local function open_map(pc, bed, pawn)
-    if not known_marker then
-        if not warned_no_marker then
-            warned_no_marker = true
-            log("no travel marker known yet (open fast travel once from a travel lamp); trying the bed's own component")
+------------------------------------------------------------------ prompt line
+-- The "Press F Rest" lines are rows in the HUD's UW_HintsList (HintList,
+-- a VerticalBox; the title "Bed | name" is its InteractionName text). While
+-- that title names a bed, a "Press T  Fast travel" text line is added to
+-- the list, in the font of the title; otherwise it is collapsed. The game
+-- may rebuild the list, so the line is put back when it goes missing.
+local TEXT_CLASS = nil
+local list_path, line_path = nil, nil
+local function find_named(w, name, depth)
+    if depth > 12 or not valid(w) then return nil end
+    if fname(w) == name then return w end
+    local tree = get(w, "WidgetTree")
+    local root = valid(tree) and get(tree, "RootWidget")
+    if valid(root) then
+        local r = find_named(root, name, depth + 1)
+        if r then return r end
+    end
+    local n = tonumber(call(w, "GetChildrenCount")) or 0
+    for i = 0, n - 1 do
+        local r = find_named(call(w, "GetChildAt", i), name, depth + 1)
+        if r then return r end
+    end
+    return nil
+end
+local function hints_widget()
+    local w = list_path and LIB.resolve(list_path)
+    if w then return w end
+    for _, x in ipairs(try(function() return FindAllOf("UW_HintsList_C") end) or {}) do
+        if valid(x) and not fname(x):find("^Default__") and call(x, "IsVisible") ~= false
+            and find_named(x, "HintList", 0) then
+            list_path = LIB.path_of(x)
+            return x
         end
-        request_from_component(pc, pawn, bed)
+    end
+    return nil
+end
+local line_logged = false
+local function update_line()
+    local hints = hints_widget()
+    if not hints then return end
+    local title = find_named(hints, "InteractionName", 0)
+    local box = find_named(hints, "HintList", 0)
+    if not (valid(title) and valid(box)) then return end
+    local t = (try(function() return title:GetText():ToString() end) or ""):lower()
+    local at_bed = t:find("bed", 1, true) ~= nil or (CFG.sleepingBags == 1 and t:find("sleeping", 1, true) ~= nil)
+    local line = line_path and LIB.resolve(line_path)
+    if not at_bed then
+        if line then call(line, "SetVisibility", 1) end      -- Collapsed
         return
     end
-    local uim_class = try(function() return StaticFindObject("/Script/Permafrost.UI_ManagerComponent") end)
-    local uim = valid(uim_class) and call(pc, "GetComponentByClass", uim_class)
-    if not valid(uim) then log("UI manager not found on the player controller") return end
-    own_call = true
-    local ok = try(function() uim:CLIENT_OpenFastTravelMap(FName(known_marker)) return true end)
-    own_call = false
-    bed_trip_until = os.clock() + 180
-    log(string.format("fast travel map from %s (marker '%s'): %s", fname(bed), known_marker, ok and "called" or "call failed"))
-end
-
------------------------------------------------------------------- prompt layout (discovery)
--- The "Press F Rest" lines are BP_InteractionHint rows in the HUD's
--- UW_HintsList (HintList, a VerticalBox), 2026-10-18 HUD dump. Logged once
--- while you look at a bed: the list's layout with its texts, and one row's
--- properties and functions, to add a "Press T Fast travel" row next.
-local prompt_logged = false
-local function log_prompt(bed)
-    if prompt_logged then return end
-    local list = nil
-    for _, x in ipairs(try(function() return FindAllOf("UW_HintsList_C") end) or {}) do
-        if valid(x) and not fname(x):find("^Default__") then list = x break end
+    if not line then
+        TEXT_CLASS = TEXT_CLASS or try(function() return StaticFindObject("/Script/UMG.TextBlock") end)
+        local tree = get(hints, "WidgetTree")
+        line = valid(TEXT_CLASS) and valid(tree) and try(function() return StaticConstructObject(TEXT_CLASS, tree) end)
+        if not valid(line) then return end
+        try(function() line:SetFont(title.Font) end)
+        try(function() line:SetColorAndOpacity(title.ColorAndOpacity) end)
+        try(function() line:SetShadowOffset(title.ShadowOffset) end)
+        try(function() line:SetShadowColorAndOpacity(title.ShadowColorAndOpacity) end)
+        call(line, "SetText", FText(string.format("Press %s  Fast travel", CFG.travelKey)))
+        line_path = LIB.path_of(line)
     end
-    if not valid(list) then return end
-    local lines, row = {}, nil
-    local function walk(x, depth, route)
-        if depth > 14 or #lines > 120 then return end
-        local cn = fname(call(x, "GetClass")) or "?"
-        local t = ""
-        if cn == "TextBlock" or cn:find("RichText") then
-            t = " '" .. tostring(try(function() return x:GetText():ToString() end)) .. "'"
-        end
-        if cn == "BP_InteractionHint_C" and not row then row = x end
-        lines[#lines + 1] = string.rep(" ", depth) .. route .. " " .. fname(x) .. ":" .. cn .. t
-        local tree = get(x, "WidgetTree")
-        local root = valid(tree) and get(tree, "RootWidget")
-        if valid(root) then walk(root, depth + 1, route .. ".0") end
-        local n = tonumber(call(x, "GetChildrenCount")) or 0
-        for i = 0, n - 1 do
-            local c = call(x, "GetChildAt", i)
-            if valid(c) then walk(c, depth + 1, route .. "." .. (i + 1)) end
+    if call(line, "GetParent") == nil or not valid(call(line, "GetParent")) then
+        call(box, "AddChildToVerticalBox", line)
+        if not line_logged then
+            line_logged = true
+            log("prompt line added under " .. fname(box))
         end
     end
-    walk(list, 0, "r")
-    -- Only once the list shows the bed's lines (a row with text).
-    local has_text = false
-    for _, l in ipairs(lines) do if l:find("'[^']+'") and not l:find("''") then has_text = true break end end
-    if not has_text then return end
-    prompt_logged = true
-    log("hint list while looking at " .. fname(bed) .. ":\n" .. table.concat(lines, "\n"))
-    if row then describe("hint row", row) end
+    call(line, "SetVisibility", 3)                            -- HitTestInvisible
 end
 
 ------------------------------------------------------------------ autosave (discovery)
@@ -368,7 +310,7 @@ RegisterKeyBind(key, function()
             local pc, pawn = player()
             if not pc or get(pc, "bShowMouseCursor") == true then return end   -- not while a menu is open
             local bed = bed_in_view(pc, pawn)
-            if bed then open_map(pc, bed, pawn) end
+            if bed then open_map(pc, bed) end
         end)
         if not ok then log("key error: " .. tostring(err)) end
     end)
@@ -385,13 +327,15 @@ game_loop(500, function()
             next_points = os.clock() + 10
             points_pass()
         end
-        if not prompt_logged then
-            local bed = bed_in_view(pc, pawn)
-            if bed then log_prompt(bed) end
-        end
     end)
     if not ok then note("error: " .. tostring(err)) end
 end)
 
-log(string.format("loaded: look at a bed and press %s for fast travel (autosave log %s, map hook %s, marker %s)", CFG.travelKey,
-    save_hooked and "on" or "off", open_hooked and "on" or "off", tostring(known_marker)))
+game_loop(200, function()
+    if os.clock() < settle then return end
+    local ok, err = pcall(update_line)
+    if not ok then note("prompt error: " .. tostring(err)) end
+end)
+
+log(string.format("loaded: look at a bed and press %s for fast travel (autosave log %s)", CFG.travelKey,
+    save_hooked and "on" or "off"))
