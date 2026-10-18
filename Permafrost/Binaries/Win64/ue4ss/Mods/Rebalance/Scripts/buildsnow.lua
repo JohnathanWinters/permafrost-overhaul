@@ -212,19 +212,42 @@ local function sheltered(actor)
         if not p then return false end
         x, y, top = p.X, p.Y, p.Z + 50
     end
+    -- From the part's middle, ignoring the part itself: a trace from its
+    -- top started level with (or above) the roof on top of walls, so walls
+    -- under a roof got snow inside (2026-10-18). Falls back to the top.
     local hit = {}
+    local mid = tonumber(origin.Z) or (top - 50)
     local blocked = try(function()
-        return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = top + 15 }, { X = x, Y = y, Z = top + 15 + limit },
-            0, false, {}, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
+        return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = mid }, { X = x, Y = y, Z = top + limit },
+            0, false, { actor }, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
     end)
+    local function hit_actor()
+        local o = hit.HitObjectHandle and try(function() return hit.HitObjectHandle.Actor:Get() end)
+        if not valid(o) then
+            local c = try(function() return hit.Component:Get() end) or hit.Component
+            o = valid(c) and call(c, "GetOwner")
+        end
+        return valid(o) and o or nil
+    end
+    if blocked == true then
+        local o = hit_actor()
+        if o and LIB.address(o) == LIB.address(actor) then blocked = nil end   -- hit itself: ignore list not honoured
+    end
+    if blocked == nil then
+        hit = {}
+        blocked = try(function()
+            return ksl:LineTraceSingle(actor, { X = x, Y = y, Z = top + 15 }, { X = x, Y = y, Z = top + 15 + limit },
+                0, false, {}, 0, hit, true, { R = 0, G = 0, B = 0, A = 0 }, { R = 0, G = 0, B = 0, A = 0 }, 0.0)
+        end)
+    end
     if blocked == nil and not trace_warned then
         trace_warned = true
         log("roof check: the trace failed, parts are treated as open to the sky")
     end
-    if blocked == true and shelter_logged < 3 then
+    if blocked == true and shelter_logged < 8 then
         shelter_logged = shelter_logged + 1
-        local o = hit.HitObjectHandle and try(function() return hit.HitObjectHandle.Actor:Get() end)
-        log(string.format("roof check: %s is under %s", fname(actor), o and valid(o) and fname(o) or "something"))
+        local o = hit_actor()
+        log(string.format("roof check: %s is under %s", fname(actor), o and fname(o) or "something"))
     end
     return blocked == true
 end
