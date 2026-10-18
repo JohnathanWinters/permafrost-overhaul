@@ -1,14 +1,16 @@
 -- TravelCost module of the Overhaul (2026-10-18). User: fast travel should
 -- cost food, 1 item for now, from the hotbar before the rest of the
 -- inventory, and from the highest hotbar slot down (slot 8 before 7).
--- The map's travel confirm runs AWorldMapManager::ConfirmSelectedFastTravel-
--- Destination. A pre-hook takes 1 food item (any DA_Consumable_* outside
+-- Every trip (map or travel lamp) ends in the player controller's
+-- Server_HandleFastTravelRequest(destination name); the map's confirm calls
+-- its own steps natively, so a hook there never fired (2026-10-18). A
+-- pre-hook on the request takes 1 food item (any DA_Consumable_* outside
 -- Medication: food and drinks) from the player's equipment inventory:
 -- quick slots from the highest down, then the remaining slots in order,
 -- then any other inventory on the player. Nothing is taken unless the full
--- cost is there. With no food the selected destination is cleared before
--- the game acts on it, so the trip does not happen, and the game's own text
--- notification is shown if a fitting one exists.
+-- cost is there. With no food the destination name is blanked, so the game
+-- finds no destination and the trip does not happen, and the game's own
+-- text notification is shown if a fitting one exists.
 -- Settings: TravelCost section of config.lua. Log tag [PF TravelCost].
 local TAG = "[PF TravelCost] "
 local function log(msg) print(TAG .. tostring(msg) .. "\n") end
@@ -154,7 +156,7 @@ local function notify(pc)
 end
 
 ------------------------------------------------------------------ hook
-local function on_confirm(manager)
+local function on_request(name_param)
     if CFG.foodPerTrip <= 0 then return end
     local pc, pawn = player_parts()
     if not pc then return end
@@ -173,19 +175,19 @@ local function on_confirm(manager)
             if left == 0 then break end
         end
     else
-        -- Not enough food: cancel by clearing the destination before the game confirms it.
-        call(manager, "ClearSelectedFastTravelDestination")
+        -- Not enough food: blank the destination so the request finds nothing.
+        try(function() name_param:set(FText("")) end)
         log("fast travel cancelled: no food on you")
         notify(pc)
     end
 end
 
 local ok = try(function()
-    RegisterHook("/Script/Permafrost.WorldMapManager:ConfirmSelectedFastTravelDestination", function(self)
-        local okc, err = pcall(on_confirm, self:get())
+    RegisterHook("/Script/Permafrost.PermaPlayerController:Server_HandleFastTravelRequest", function(self, name_param)
+        local okc, err = pcall(on_request, name_param)
         if not okc then log("error: " .. tostring(err)) end
     end)
     return true
 end)
 log(ok and string.format("loaded: fast travel costs %d food (hotbar first)", CFG.foodPerTrip)
-    or "FAILED to hook ConfirmSelectedFastTravelDestination")
+    or "FAILED to hook Server_HandleFastTravelRequest")

@@ -105,9 +105,17 @@ local function scalar_params(mat)
     end
     return out, snow
 end
+local diag, unresolved = 0, 0
 local function log_part(actor)
     mesh_class = mesh_class or try(function() return StaticFindObject("/Script/Engine.MeshComponent") end)
     local comps = valid(mesh_class) and call(actor, "K2_GetComponentsByClass", mesh_class)
+    if diag < 5 then
+        diag = diag + 1
+        local n = 0
+        if comps then try(function() comps:ForEach(function() n = n + 1 end) end) end
+        log(string.format("part %s: mesh class %s, %s mesh components", fname(actor), tostring(valid(mesh_class)),
+            comps and tostring(n) or "no list"))
+    end
     if not comps then return end
     try(function()
         comps:ForEach(function(_, e)
@@ -169,7 +177,11 @@ game_loop(1000, function()
             if i > 20 then queue[#queue + 1] = p     -- 20 parts per second at most
             else
                 local a = LIB.resolve(p)
-                if a then log_part(a) end
+                if a then log_part(a)
+                elseif unresolved < 3 then
+                    unresolved = unresolved + 1
+                    log("could not look up built part " .. p)
+                end
             end
         end
     end)
