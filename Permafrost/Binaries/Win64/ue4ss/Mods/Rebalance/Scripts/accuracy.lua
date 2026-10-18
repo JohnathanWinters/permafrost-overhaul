@@ -8,8 +8,8 @@
 --  * shrinks while aiming down sights and while crouched.
 -- Applied to the bullet itself: when the player's gun spawns a projectile,
 -- its flight direction is turned by a random angle inside the cone. Enemy
--- guns are untouched. The crosshair (CrosshairSwitcher in the HUD) is scaled
--- with the cone so it opens up and tightens.
+-- guns are untouched. The crosshair lines (CrosshairSwitcher in the HUD)
+-- move apart with the cone so it opens up and tightens.
 -- Settings: Accuracy section of config.lua. Log tag [PF Accuracy].
 local TAG = "[PF Accuracy] "
 local function log(msg) print(TAG .. tostring(msg) .. "\n") end
@@ -29,7 +29,7 @@ local DEFAULTS = {
     { "crouchMultiplier",  0.7,  "extra spread while crouched" },
     { "sprintSpeed",       600,  "speed (cm/s) that counts as a full sprint" },
     { "reticle",           1,    "1 = the crosshair grows and shrinks with the spread" },
-    { "reticleScalePerDeg", 0.45, "crosshair growth per degree of extra spread" },
+    { "reticlePixelsPerDeg", 10, "how far the crosshair lines move apart per degree of extra spread (pixels)" },
     { "debugLog",          1,    "1 = log the first shots" },
 }
 local function load_config()
@@ -189,26 +189,92 @@ local function find_hud()
     return nil
 end
 
-local hud_addr, route, settle_until, shown_scale = nil, nil, 0, 1
+-- The crosshair opens up: each of its lines is moved outward along its own
+-- direction by extra spread x reticlePixelsPerDeg. (Scaling the whole
+-- crosshair made the lines longer and thicker, which read as bigger and
+-- brighter, user 2026-10-18.) A line's direction comes from its name
+-- (top/bottom/left/right) or else from its canvas position relative to the
+-- other lines. The layout is written once to dlls\crosshair.txt.
+local DIR_WORDS = { { "top", 0, -1 }, { "up", 0, -1 }, { "bottom", 0, 1 }, { "down", 0, 1 },
+                    { "left", -1, 0 }, { "right", 1, 0 } }
+local hud_addr, route, settle_until = nil, nil, 0
+local lines = nil          -- { route, dx, dy } for every crosshair line
+local shown_gap = -1
+
+local function collect_lines(hud)
+    local switcher = follow(hud, route)
+    if not switcher then return nil end
+    local found, dump = {}, {}
+    local function rec(w, depth, r)
+        if depth > 8 then return end
+        local name, cls = fname(w), fname(call(w, "GetClass")) or "?"
+        local n = tonumber(call(w, "GetChildrenCount")) or 0
+        local slot = get(w, "Slot")
+        local pos = valid(slot) and call(slot, "GetPosition")
+        local px, py = pos and tonumber(pos.X), pos and tonumber(pos.Y)
+        dump[#dump + 1] = string.format("%s%s (%s) slot=%s pos=%s", string.rep("  ", depth), name, cls,
+            valid(slot) and fname(call(slot, "GetClass")) or "-", px and string.format("%.0f,%.0f", px, py) or "-")
+        if cls == "Image" or cls:find("Border") and n == 0 then
+            found[#found + 1] = { route = r, name = name:lower(), px = px, py = py }
+        end
+        for i = 0, n do
+            local c = (i == 0) and child(w, 0) or child(w, i)
+            if c then
+                local rr = { table.unpack(r) }
+                rr[#rr + 1] = i
+                rec(c, depth + 1, rr)
+            end
+        end
+    end
+    rec(switcher, 0, route)
+    -- Direction: name first, else position relative to the lines' centre.
+    local cx, cy, k = 0, 0, 0
+    for _, f in ipairs(found) do if f.px then cx, cy, k = cx + f.px, cy + f.py, k + 1 end end
+    if k > 0 then cx, cy = cx / k, cy / k end
+    local out = {}
+    for _, f in ipairs(found) do
+        local dx, dy = nil, nil
+        for _, w in ipairs(DIR_WORDS) do
+            if f.name:find(w[1], 1, true) then dx, dy = w[2], w[3] break end
+        end
+        if not dx and f.px then
+            local ox, oy = f.px - cx, f.py - cy
+            local l = math.sqrt(ox * ox + oy * oy)
+            if l > 0.5 then dx, dy = ox / l, oy / l end
+        end
+        if dx then out[#out + 1] = { route = f.route, dx = dx, dy = dy } end
+    end
+    local fh = io.open(ROOT .. "dlls\\crosshair.txt", "w")
+    if fh then fh:write(table.concat(dump, "\n") .. "\n") fh:close() end
+    log(string.format("crosshair: %d lines that move with the spread (layout in dlls\\crosshair.txt)", #out))
+    return out
+end
+
 local function reticle(now)
     if CFG.reticle ~= 1 then return end
     local hud = find_hud()
     if not hud then hud_addr = nil return end
     local a = LIB.address(hud)
-    if a ~= hud_addr then hud_addr, route, settle_until = a, nil, now + 10 end
+    if a ~= hud_addr then hud_addr, route, lines, settle_until, shown_gap = a, nil, nil, now + 10, -1 end
     if now < settle_until then return end
-    if not route then
+    if route == nil then
         route = find_route(hud, 0, {}, "CrosshairSwitcher") or false
-        log(route and "crosshair found" or "crosshair NOT found (CrosshairSwitcher)")
+        if not route then log("crosshair NOT found (CrosshairSwitcher)") end
     end
     if not route then return end
-    local s = 1 + extra * CFG.reticleScalePerDeg
-    if math.abs(s - shown_scale) < 0.02 then return end
-    local w = follow(hud, route)
-    if w then
-        call(w, "SetRenderScale", { X = s, Y = s })
-        shown_scale = s
+    if not lines then
+        lines = collect_lines(hud) or {}
+        -- Undo the earlier whole-crosshair scaling, if a session had it.
+        local sw = follow(hud, route)
+        if sw then call(sw, "SetRenderScale", { X = 1, Y = 1 }) end
     end
+    local gap = extra * CFG.reticlePixelsPerDeg
+    if math.abs(gap - shown_gap) < 0.5 then return end
+    for _, l in ipairs(lines) do
+        local w = follow(hud, l.route)
+        if w then call(w, "SetRenderTranslation", { X = l.dx * gap, Y = l.dy * gap }) end
+    end
+    shown_gap = gap
 end
 
 game_loop(50, function()

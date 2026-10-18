@@ -168,8 +168,8 @@ return {
         aimMultiplier                = 0.35  , -- vanilla -     extra spread while aiming down sights (0.35 = 35%)
         crouchMultiplier             = 0.7   , -- vanilla -     extra spread while crouched
         sprintSpeed                  = 600   , -- vanilla -     speed in cm/s that counts as a full sprint
-        reticle                      = 1     , -- vanilla 0     1 = the crosshair grows and shrinks with the spread
-        reticleScalePerDeg           = 0.45  , -- vanilla -     crosshair growth per degree of extra spread
+        reticle                      = 1     , -- vanilla 0     1 = the crosshair lines open up and close with the spread
+        reticlePixelsPerDeg          = 10    , -- vanilla -     how far the crosshair lines move apart per degree of extra spread (pixels)
         debugLog                     = 1     , -- vanilla -     1 = log the first shots
     },
 
