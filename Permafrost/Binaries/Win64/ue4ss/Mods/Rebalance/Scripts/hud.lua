@@ -256,6 +256,50 @@ end
 -- A menu is open when the game shows the mouse cursor. (The ledger menu
 -- widget reports itself visible even when closed, which kept the whole HUD
 -- shown, 2026-10-18.)
+-- The player's own stats, read from the game's attribute sets (the stat
+-- diamonds have no bars or "x/y" texts to read: 0 found and the health area
+-- stayed shown, 2026-10-18). Each stat against its maximum; the lowest wins.
+local STATS = {
+    { "AttributeSet_HealthMetrics", "Health", "MaxHealth" },
+    { "AttributeSet_StaminaMetrics", "Hunger", "MaxHunger" },
+    { "AttributeSet_StaminaMetrics", "Energy", "MaxEnergy" },
+    { "AttributeSet_StaminaMetrics", "Stamina", "MaxStamina" },
+    { "AttributeSet_TemperatureMetrics", "BodyWarmth", "MaxBodyWarmth" },
+}
+local set_paths = {}         -- class -> path of the player's set
+local function attr(set, f)
+    local d = get(set, f)
+    if type(d) == "number" then return d end
+    return d and tonumber(try(function() return d.CurrentValue end)) or nil
+end
+local function player_set(pc, cls)
+    local p = set_paths[cls]
+    local s = p and LIB.resolve(p)
+    if s then return s end
+    local pawn = get(pc, "Pawn")
+    local names = { valid(pawn) and fname(pawn) or nil }
+    local ps = get(pc, "PlayerState")
+    if valid(ps) then names[#names + 1] = fname(ps) end
+    for _, o in ipairs(try(function() return FindAllOf(cls) end) or {}) do
+        if valid(o) and not fname(o):find("^Default__") then
+            local op = LIB.path_of(o)
+            for _, n in ipairs(names) do
+                if n and op and op:find(n, 1, true) then set_paths[cls] = op return o end
+            end
+        end
+    end
+    return nil
+end
+local function lowest_attribute(pc)
+    local best, src = nil, nil
+    for _, st in ipairs(STATS) do
+        local set = player_set(pc, st[1])
+        local v, m = set and attr(set, st[2]), set and attr(set, st[3])
+        if v and m and m > 0 and v / m < (best or 2) then best, src = v / m, st[2] end
+    end
+    return best, src
+end
+
 local function menu_open(pc)
     return pc ~= nil and get(pc, "bShowMouseCursor") == true
 end
@@ -311,6 +355,11 @@ local function decide(hud)
         for _, e in ipairs(routes.health) do
             local w = follow(hud, e.route)
             if w then low, src = lowest_stat(w, 0, low, src) end
+        end
+        local pcx = player_pc()
+        if pcx then
+            local a, asrc = lowest_attribute(pcx)
+            if a and a < (low or 2) then low, src = a, asrc end
         end
         local want = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
         -- Logged on each change: which stat keeps the health area shown

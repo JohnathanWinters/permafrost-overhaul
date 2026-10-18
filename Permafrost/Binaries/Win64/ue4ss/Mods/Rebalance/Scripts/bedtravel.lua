@@ -242,12 +242,62 @@ end)
 
 local bed_trip_until = 0
 local warned_no_marker = false
-local function open_map(pc, bed)
+local fn_params = {}
+-- Parameters of a UFunction as { name, property class } (logged once).
+local function params_of(path)
+    if fn_params[path] then return fn_params[path] end
+    local list = {}
+    local fn = try(function() return StaticFindObject(path) end)
+    if valid(fn) then
+        try(function()
+            fn:ForEachProperty(function(prop)
+                list[#list + 1] = { try(function() return prop:GetFName():ToString() end) or "?",
+                                    try(function() return prop:GetClass():GetFName():ToString() end) or "?" }
+            end)
+        end)
+    end
+    local shown = {}
+    for _, e in ipairs(list) do shown[#shown + 1] = e[1] .. ":" .. e[2] end
+    log(path:match("[^.:]+$") .. " takes: " .. (#shown > 0 and table.concat(shown, ", ") or "nothing readable"))
+    fn_params[path] = list
+    return list
+end
+
+-- No lamp marker known: the bed's own travel component is asked to start
+-- a trip (TravelRequest, what a travel point does when used), with the
+-- player controller or pawn for object parameters.
+local world_map_described = false
+local function request_from_component(pc, pawn, bed)
+    ft_class = ft_class or try(function() return StaticFindObject("/Script/Permafrost.FastTravelComponent") end)
+    local comp = valid(ft_class) and call(bed, "GetComponentByClass", ft_class)
+    if not valid(comp) then log("bed has no travel component (yet)") return end
+    local args = {}
+    for _, e in ipairs(params_of("/Script/Permafrost.FastTravelComponent:TravelRequest")) do
+        if e[1] ~= "ReturnValue" then
+            if e[2] == "ObjectProperty" then
+                args[#args + 1] = e[1]:lower():find("controller") and pc or pawn
+            elseif e[2] == "BoolProperty" then args[#args + 1] = true
+            elseif e[2] == "NameProperty" then args[#args + 1] = FName("None")
+            else args[#args + 1] = 0 end
+        end
+    end
+    local ok, err = pcall(function() comp:TravelRequest(table.unpack(args)) end)
+    log(string.format("asked %s's travel component for a trip (%d args): %s", fname(bed), #args, ok and "ok" or tostring(err)))
+    if not world_map_described then
+        world_map_described = true
+        for _, m in ipairs(try(function() return FindAllOf("WorldMapManager") end) or {}) do
+            if valid(m) and not fname(m):find("^Default__") then describe("world map manager", m) break end
+        end
+    end
+end
+
+local function open_map(pc, bed, pawn)
     if not known_marker then
         if not warned_no_marker then
             warned_no_marker = true
-            log("no travel marker known yet: open fast travel once from a travel lamp, then beds work")
+            log("no travel marker known yet (open fast travel once from a travel lamp); trying the bed's own component")
         end
+        request_from_component(pc, pawn, bed)
         return
     end
     local uim_class = try(function() return StaticFindObject("/Script/Permafrost.UI_ManagerComponent") end)
@@ -261,32 +311,27 @@ local function open_map(pc, bed)
 end
 
 ------------------------------------------------------------------ prompt layout (discovery)
--- The "Press F Rest" box is the bed's own InteractionIndicator component
--- (a widget component on the actor, as on doors), not a screen widget.
+-- The "Press F Rest" lines are BP_InteractionHint rows in the HUD's
+-- UW_HintsList (HintList, a VerticalBox), 2026-10-18 HUD dump. Logged once
+-- while you look at a bed: the list's layout with its texts, and one row's
+-- properties and functions, to add a "Press T Fast travel" row next.
 local prompt_logged = false
 local function log_prompt(bed)
     if prompt_logged then return end
-    local wc = get(bed, "InteractionIndicator")
-    local w = valid(wc) and (call(wc, "GetUserWidgetObject") or call(wc, "GetWidget"))
-    if not valid(w) then
-        -- Any InteractionIndicator-like widget in the viewport instead.
-        for _, cn in ipairs({ "UW_InteractionIndicator_C", "BP_InteractionHint_C" }) do
-            for _, x in ipairs(try(function() return FindAllOf(cn) end) or {}) do
-                if valid(x) and not fname(x):find("^Default__") then w = x break end
-            end
-            if valid(w) then break end
-        end
+    local list = nil
+    for _, x in ipairs(try(function() return FindAllOf("UW_HintsList_C") end) or {}) do
+        if valid(x) and not fname(x):find("^Default__") then list = x break end
     end
-    if not valid(w) then return end
-    prompt_logged = true
-    local lines = {}
+    if not valid(list) then return end
+    local lines, row = {}, nil
     local function walk(x, depth, route)
-        if depth > 9 or #lines > 80 then return end
+        if depth > 14 or #lines > 120 then return end
         local cn = fname(call(x, "GetClass")) or "?"
         local t = ""
         if cn == "TextBlock" or cn:find("RichText") then
             t = " '" .. tostring(try(function() return x:GetText():ToString() end)) .. "'"
         end
+        if cn == "BP_InteractionHint_C" and not row then row = x end
         lines[#lines + 1] = string.rep(" ", depth) .. route .. " " .. fname(x) .. ":" .. cn .. t
         local tree = get(x, "WidgetTree")
         local root = valid(tree) and get(tree, "RootWidget")
@@ -297,8 +342,14 @@ local function log_prompt(bed)
             if valid(c) then walk(c, depth + 1, route .. "." .. (i + 1)) end
         end
     end
-    walk(w, 0, "r")
-    log("interaction prompt layout (" .. fname(w) .. ", component " .. tostring(valid(wc) and fname(wc)) .. "):\n" .. table.concat(lines, "\n"))
+    walk(list, 0, "r")
+    -- Only once the list shows the bed's lines (a row with text).
+    local has_text = false
+    for _, l in ipairs(lines) do if l:find("'[^']+'") and not l:find("''") then has_text = true break end end
+    if not has_text then return end
+    prompt_logged = true
+    log("hint list while looking at " .. fname(bed) .. ":\n" .. table.concat(lines, "\n"))
+    if row then describe("hint row", row) end
 end
 
 ------------------------------------------------------------------ autosave (discovery)
@@ -317,7 +368,7 @@ RegisterKeyBind(key, function()
             local pc, pawn = player()
             if not pc or get(pc, "bShowMouseCursor") == true then return end   -- not while a menu is open
             local bed = bed_in_view(pc, pawn)
-            if bed then open_map(pc, bed) end
+            if bed then open_map(pc, bed, pawn) end
         end)
         if not ok then log("key error: " .. tostring(err)) end
     end)
