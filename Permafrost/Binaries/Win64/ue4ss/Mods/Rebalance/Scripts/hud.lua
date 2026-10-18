@@ -65,7 +65,13 @@ local PARTS = {
     UW_HeldItemIndicator = "weapon",
     InvalidationBox_Quests = "quest",
 }
-local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" } }
+local PREFIXES = { { "PreviousQuickSlot", "hotbar" }, { "NextQuickSlot", "hotbar" }, { "QuickSlots", "hotbar" },
+                   { "UW_LedgerMenu", "menu" } }
+-- The bottom-left stat diamonds and the bottom-right toolbelt are separate
+-- widgets, outside UW_HUD (user screenshot 2026-10-18). Found by their own
+-- class each pass; only the widgets themselves are touched (no owner
+-- climbing: that crashed during a world load).
+local PANEL_CLASSES = { health = { "UW_HUDStatusPanel_C" }, hotbar = { "UW_QuickSlot_C" } }
 -- Never walked into: the compass and its markers, the crosshairs.
 local NO_WALK = { UW_HUDCompass = true, CrosshairSwitcher = true, Markers_CanvasPanel = true,
                   Canvas_WorldIndicators = true, Canvas_WorldMapMarkers = true }
@@ -150,7 +156,7 @@ local function follow(w, route)
 end
 
 -- routes[group] = { { route, name }, ... } relative to the HUD widget.
-local routes = { health = {}, hotbar = {}, quest = {}, weapon = {} }
+local routes = { health = {}, hotbar = {}, quest = {}, weapon = {}, menu = {} }
 local bars = {}           -- routes of ProgressBars inside the health parts
 local quest_texts = {}    -- routes of TextBlocks inside the quest parts
 local hud_addr = nil
@@ -158,7 +164,7 @@ local dumped = false
 
 local function scan(hud)
     if not find_base(hud) then return false end   -- HUD not built yet
-    routes = { health = {}, hotbar = {}, quest = {}, weapon = {} }
+    routes = { health = {}, hotbar = {}, quest = {}, weapon = {}, menu = {} }
     bars, quest_texts = {}, {}
     local dump = (CFG.debugLog == 1 and not dumped) and {} or nil
     local function inner(w, depth, route, out, kind)
@@ -218,6 +224,46 @@ local function lowest_in(w, depth, best)
     return best
 end
 
+local panel_logged = {}
+local function panels(key)
+    local out = {}
+    for _, cls in ipairs(PANEL_CLASSES[key] or {}) do
+        for _, w in ipairs(try(function() return FindAllOf(cls) end) or {}) do
+            if valid(w) and not fname(w):find("^Default__") then out[#out + 1] = w end
+        end
+    end
+    if CFG.debugLog == 1 and not panel_logged[key] and #out > 0 then
+        panel_logged[key] = true
+        log(string.format("%s: %d separate widget(s) (%s)", key, #out, table.concat(PANEL_CLASSES[key], ", ")))
+    end
+    return out
+end
+
+-- Lowest fill under a widget: ProgressBars, and "284/300"-style texts.
+local function lowest_stat(w, depth, best)
+    if depth > 8 then return best end
+    local c = cls_name(w)
+    if c:find("ProgressBar") then
+        local pct = tonumber(get(w, "Percent"))
+        if pct then best = math.min(best or 1, pct) end
+    elseif c:find("TextBlock") then
+        local t = try(function() return w:GetText():ToString() end)
+        local a, b = t and t:match("^%s*(%d+)%s*/%s*(%d+)%s*$")
+        a, b = tonumber(a), tonumber(b)
+        if a and b and b > 0 then best = math.min(best or 1, a / b) end
+    end
+    each_child(w, function(ch) best = lowest_stat(ch, depth + 1, best) end)
+    return best
+end
+
+local function menu_open(hud)
+    for _, e in ipairs(routes.menu) do
+        local w = follow(hud, e.route)
+        if w and call(w, "IsVisible") == true then return true end
+    end
+    return false
+end
+
 ------------------------------------------------------------------ rules
 local HOTBAR_KEYS = { "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Zero" }
 local hotbar_structs = nil
@@ -266,8 +312,9 @@ local function decide(hud)
         end
         for _, e in ipairs(routes.health) do
             local w = follow(hud, e.route)
-            if w then low = lowest_in(w, 0, low) end
+            if w then low = lowest_stat(w, 0, low) end
         end
+        for _, w in ipairs(panels("health")) do low = lowest_stat(w, 0, low) end
         targets.health = (low == nil or low * 100 < CFG.lowStatPercent) and 1 or 0
     end
     local pc = player_pc()
@@ -292,6 +339,11 @@ local function decide(hud)
             held_addr = addr
         end
         targets.weapon = (addr and now < weapon_until) and 1 or 0
+    end
+    -- Inventory open: everything shown (the toolbelt slots appear there too).
+    if menu_open(hud) then
+        for k in pairs(targets) do targets[k] = 1 end
+        return
     end
     -- Quest box (every 0.5 s): its text changed -> shown for questShowSeconds.
     if ticks % 5 == 0 and #routes.quest > 0 then
@@ -331,6 +383,7 @@ local function fade(hud)
                 local w = follow(hud, e.route)
                 if w then call(w, "SetRenderOpacity", shown) end
             end
+            for _, w in ipairs(panels(key)) do call(w, "SetRenderOpacity", shown) end
         end
     end
 end

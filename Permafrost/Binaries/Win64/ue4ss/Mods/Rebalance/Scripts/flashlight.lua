@@ -60,11 +60,47 @@ end
 
 local lights_done = {}        -- component address -> true
 local found_logged = 0
+-- Shadow settings, enforced every pass: the light still threw no shadow
+-- with CastShadows on (user screenshot 2026-10-18), so the other switches
+-- are forced too and every shadow-related value is logged once.
+local SHADOW_PROPS = { "CastShadows", "CastDynamicShadow", "CastStaticShadow", "bCastVolumetricShadow",
+                       "bAffectDynamicIndirectLighting", "ShadowResolutionScale", "ShadowBias", "ShadowSlopeBias",
+                       "ContactShadowLength", "Mobility", "bUseRayTracedDistanceFieldShadows", "MaxDrawDistance",
+                       "bCastShadowsFromCinematicObjectsOnly", "bAffectsWorld", "SourceRadius", "SoftSourceRadius" }
+local shadow_logged = false
+local function enforce_shadows(comp)
+    if CFG.castShadows ~= 1 then return end
+    if not shadow_logged and CFG.debugLog == 1 then
+        shadow_logged = true
+        local parts = {}
+        for _, k in ipairs(SHADOW_PROPS) do parts[#parts + 1] = k .. "=" .. tostring(get(comp, k)) end
+        log("light shadow settings (before): " .. table.concat(parts, ", "))
+    end
+    local changed = false
+    for _, k in ipairs({ "CastDynamicShadow", "CastStaticShadow" }) do
+        if get(comp, k) == false then LIB.set(comp, k, true) changed = true end
+    end
+    if get(comp, "bCastShadowsFromCinematicObjectsOnly") == true then
+        LIB.set(comp, "bCastShadowsFromCinematicObjectsOnly", false) changed = true
+    end
+    local res = tonumber(get(comp, "ShadowResolutionScale"))
+    if res and res < 1 then LIB.set(comp, "ShadowResolutionScale", 1.0) changed = true end
+    if get(comp, "CastShadows") ~= true or changed then
+        -- Toggling through the setter re-creates the light's render state.
+        call(comp, "SetCastShadows", false)
+        call(comp, "SetCastShadows", true)
+        if CFG.debugLog == 1 and found_logged < 10 then
+            found_logged = found_logged + 1
+            log("shadows switched back on for " .. fname(comp))
+        end
+    end
+end
+
 local function fix_light(comp)
+    enforce_shadows(comp)
     local addr = LIB.address(comp)
     if not addr or lights_done[addr] then return end
     lights_done[addr] = true
-    if CFG.castShadows == 1 then call(comp, "SetCastShadows", true) end
     local rot = get(comp, "RelativeRotation")
     local p, y, r = rot and tonumber(rot.Pitch), rot and tonumber(rot.Yaw), rot and tonumber(rot.Roll)
     if p and CFG.pitchUpDegrees ~= 0 then
