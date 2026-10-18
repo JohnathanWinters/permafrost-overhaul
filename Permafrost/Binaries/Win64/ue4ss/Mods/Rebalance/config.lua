@@ -206,6 +206,8 @@ return {
     -- BED TRAVEL: Your beds show on the map as fast travel points (the buildable travel lamp still works too).
     BedTravel = {
         sleepingBags                 = 0     , -- vanilla -     1 = sleeping bags count as beds too
+        travelKey                    = "T"   , -- vanilla -     key that opens fast travel while you look at a bed
+        reachMetres                  = 3     , -- vanilla -     how close the bed must be
     },
 
     -- TRAVEL COST: What fast travel costs. Food comes from the hotbar first (highest slot first), then the inventory.
@@ -230,7 +232,7 @@ return {
     HUD = {
         lowStatPercent               = 25    , -- vanilla -     health area shows while any of its bars is below this %
         hotbarShowSeconds            = 2     , -- vanilla -     hotbar shows this long after a hotbar key
-        questShowSeconds             = 12    , -- vanilla -     quest box shows this long after it changes
+        questShowSeconds             = 30    , -- vanilla -     quest box shows this long after it changes
         weaponShowSeconds            = 2     , -- vanilla -     selected weapon box shows this long after you switch items (hidden with empty hands)
         fadeSeconds                  = 0.25  , -- vanilla -     fade time
         debugLog                     = 1     , -- vanilla -     1 = log the HUD parts found (dlls\hud_tree.txt)

@@ -30,7 +30,7 @@ local DEFAULTS = {
     { "enabled",           1,    "1 = on" },
     { "lowStatPercent",    25,   "health area shows while any of its bars is below this %" },
     { "hotbarShowSeconds", 2,    "hotbar shows this long after a hotbar key" },
-    { "questShowSeconds",  12,   "quest box shows this long after it changes" },
+    { "questShowSeconds",  30,   "quest box shows this long after it changes" },
     { "weaponShowSeconds", 2,    "selected weapon box shows this long after you switch items" },
     { "fadeSeconds",       0.25, "fade in/out time" },
     { "debugLog",          1,    "1 = log the HUD parts found and dump the tree" },
